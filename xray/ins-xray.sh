@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-#  XRAY CORE & NGINX REVERSE PROXY INSTALLER - TOEYVPN V2
+#  XRAY CORE & NGINX REVERSE PROXY INSTALLER - TOEYVPN V2 (SMART SSL CHECK)
 # ==============================================================================
 export DEBIAN_FRONTEND=noninteractive
 
@@ -14,8 +14,10 @@ apt-get remove --purge apache2 apache2-utils apache2-bin -y >/dev/null 2>&1
 apt-get update -y
 apt-get install -y curl wget jq socat openssl nginx xz-utils ca-certificates psmisc
 
-# ติดตั้ง Xray Core อย่างถูกต้องผ่าน official script
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+# ติดตั้ง Xray Core อย่างถูกต้องผ่าน official script (ถ้ายังไม่มี)
+if [ ! -f /usr/local/bin/xray ]; then
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+fi
 
 mkdir -p /etc/xray /var/log/xray /usr/local/etc/xray
 touch /etc/xray/xray-exp.txt /etc/xray/xray-lock.txt /var/log/xray/access.log /var/log/xray/error.log
@@ -26,16 +28,25 @@ systemctl stop nginx >/dev/null 2>&1
 fuser -k 80/tcp >/dev/null 2>&1
 fuser -k 443/tcp >/dev/null 2>&1
 
-if [[ "$DOMAIN" != "$MYIP" && -n "$DOMAIN" ]]; then
-    curl https://get.acme.sh | sh -s email=admin@${DOMAIN}
-    /root/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
-    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1
-    /root/.acme.sh/acme.sh --issue -d "${DOMAIN}" --standalone -k ec-256 --force
-    /root/.acme.sh/acme.sh --installcert -d "${DOMAIN}" \
-        --fullchainpath /etc/xray/xray.crt \
-        --keypath /etc/xray/xray.key --ecc
+# ตรวจสอบอัจฉริยะ: หากมี SSL อยู่แล้ว และไม่ใช่การเปลี่ยนโดเมน ข้ามการขอใหม่ทันทีเพื่อเซฟโควตา!
+if [[ -s /etc/xray/xray.crt && -s /etc/xray/xray.key ]]; then
+    echo -e "พบใบรับรอง SSL เดิมในระบบอยู่แล้ว ข้ามการขอใหม่เพื่อป้องกัน Rate Limit"
+else
+    if [[ "$DOMAIN" != "$MYIP" && -n "$DOMAIN" ]]; then
+        echo -e "กำลังขอใบรับรอง SSL ใหม่ผ่าน Let's Encrypt สำหรับโดเมน: ${DOMAIN}..."
+        if [ ! -f /root/.acme.sh/acme.sh ]; then
+            curl https://get.acme.sh | sh -s email=admin@${DOMAIN}
+            /root/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
+            /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1
+        fi
+        /root/.acme.sh/acme.sh --issue -d "${DOMAIN}" --standalone -k ec-256 --force
+        /root/.acme.sh/acme.sh --installcert -d "${DOMAIN}" \
+            --fullchainpath /etc/xray/xray.crt \
+            --keypath /etc/xray/xray.key --ecc
+    fi
 fi
 
+# หากยังไม่มีหรือขอไม่ผ่าน ให้สร้าง Self-Signed สำรองอัตโนมัติ
 if [[ ! -s /etc/xray/xray.crt || ! -s /etc/xray/xray.key ]]; then
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout /etc/xray/xray.key \
@@ -44,9 +55,10 @@ if [[ ! -s /etc/xray/xray.crt || ! -s /etc/xray/xray.key ]]; then
 fi
 chmod 644 /etc/xray/xray.crt /etc/xray/xray.key
 
-# สร้างไฟล์ config ไว้ทั้ง 2 พาธรองรับทั้งระบบเดิมและ official path
-UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-cat <<EOF > /etc/xray/config.json
+# สร้างไฟล์ config ไว้ทั้ง 2 พาธรองรับระบบเดิมและ official path
+if [ ! -f /etc/xray/config.json ]; then
+    UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+    cat <<EOF > /etc/xray/config.json
 {
   "log": {
     "access": "/var/log/xray/access.log",
@@ -103,6 +115,7 @@ cat <<EOF > /etc/xray/config.json
   ]
 }
 EOF
+fi
 
 cp -f /etc/xray/config.json /usr/local/etc/xray/config.json
 
