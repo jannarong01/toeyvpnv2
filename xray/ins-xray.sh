@@ -7,7 +7,6 @@ export DEBIAN_FRONTEND=noninteractive
 MYIP=$(curl -sS --max-time 5 ipv4.icanhazip.com || curl -sS --max-time 5 ifconfig.me)
 DOMAIN=$(cat /etc/xray/domain 2>/dev/null || echo "$MYIP")
 
-# ปิดและลบ Apache2 ป้องกันการแย่งพอร์ต 80/443 กับ Nginx
 systemctl stop apache2 >/dev/null 2>&1
 systemctl disable apache2 >/dev/null 2>&1
 apt-get remove --purge apache2 apache2-utils apache2-bin -y >/dev/null 2>&1
@@ -15,15 +14,14 @@ apt-get remove --purge apache2 apache2-utils apache2-bin -y >/dev/null 2>&1
 apt-get update -y
 apt-get install -y curl wget jq socat openssl nginx xz-utils ca-certificates psmisc
 
-# 1. ติดตั้ง Xray Core
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
+# ติดตั้ง Xray Core อย่างถูกต้องผ่าน official script
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-mkdir -p /etc/xray /var/log/xray
+mkdir -p /etc/xray /var/log/xray /usr/local/etc/xray
 touch /etc/xray/xray-exp.txt /etc/xray/xray-lock.txt /var/log/xray/access.log /var/log/xray/error.log
 chmod -R 755 /var/log/xray
 chmod 666 /var/log/xray/access.log /var/log/xray/error.log
 
-# 2. ขอใบรับรอง SSL (Let's Encrypt) หรือสร้าง Self-Signed กรณีใช้ IP
 systemctl stop nginx >/dev/null 2>&1
 fuser -k 80/tcp >/dev/null 2>&1
 fuser -k 443/tcp >/dev/null 2>&1
@@ -46,8 +44,8 @@ if [[ ! -s /etc/xray/xray.crt || ! -s /etc/xray/xray.key ]]; then
 fi
 chmod 644 /etc/xray/xray.crt /etc/xray/xray.key
 
-# 3. สร้างไฟล์ตั้งค่า Xray (/etc/xray/config.json)
-UUID=$(cat /proc/sys/kernel/random/uuid)
+# สร้างไฟล์ config ไว้ทั้ง 2 พาธรองรับทั้งระบบเดิมและ official path
+UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 cat <<EOF > /etc/xray/config.json
 {
   "log": {
@@ -106,7 +104,8 @@ cat <<EOF > /etc/xray/config.json
 }
 EOF
 
-# 4. ตั้งค่า Nginx สำหรับพอร์ต 80 และ 443
+cp -f /etc/xray/config.json /usr/local/etc/xray/config.json
+
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
 rm -f /etc/nginx/conf.d/default.conf
 
