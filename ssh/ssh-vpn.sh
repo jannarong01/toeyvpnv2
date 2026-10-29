@@ -1,4 +1,144 @@
 #!/bin/bash
+# TOEYVPN_SAFE_UPDATE_V1
+# Insert immediately after the existing shebang.
+# Keep the original script below this safety gate.
+
+set -Eeuo pipefail
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+if [[ $EUID -ne 0 ]]; then
+    echo "[SSH ERROR] Run as root." >&2
+    exit 1
+fi
+
+if [[ "${TOEYVPN_MANAGED_UPDATE:-}" != "TOEYVPN_SAFE_UPDATE_V1" ]]; then
+    echo "[BLOCKED] Direct execution of the legacy installer is disabled." >&2
+    echo "Use setup.sh --check or setup.sh --apply." >&2
+    exit 1
+fi
+
+case "${1:---check}" in
+    --check|--apply)
+        ;;
+    *)
+        echo "[SSH ERROR] Unsupported mode." >&2
+        exit 1
+        ;;
+esac
+
+if [[ ! -s /home/vps/public_html/api_ssh.php ||
+      ! -s /home/vps/public_html/index.php ||
+      ! -x /usr/bin/panel-cmd ||
+      ! -x /usr/bin/api-vpn ]]; then
+    echo "[REPAIR REQUIRED] Existing panel components are incomplete." >&2
+    echo "The legacy installer will not be run automatically." >&2
+    exit 1
+fi
+
+if ! command -v nginx >/dev/null; then
+    echo "[SSH ERROR] Nginx is missing." >&2
+    exit 1
+fi
+
+if ! command -v php >/dev/null; then
+    echo "[SSH ERROR] PHP CLI is missing; PHP syntax cannot be checked." >&2
+    exit 1
+fi
+
+if [[ ! -x /usr/sbin/sshd ]]; then
+    echo "[SSH ERROR] OpenSSH server is missing." >&2
+    exit 1
+fi
+
+echo "[CHECK] Nginx configuration"
+nginx -t
+
+echo "[CHECK] OpenSSH configuration"
+/usr/sbin/sshd -t
+
+echo "[CHECK] Existing PHP syntax"
+php -l /home/vps/public_html/api_ssh.php
+php -l /home/vps/public_html/index.php
+
+echo "[CHECK] Existing command syntax"
+bash -n /usr/bin/api-vpn
+bash -n /usr/bin/panel-cmd
+
+if ! systemctl is-active --quiet nginx.service; then
+    echo "[SSH ERROR] Nginx is not active. Diagnose it before applying maintenance." >&2
+    exit 1
+fi
+
+if ! systemctl is-active --quiet ssh.service &&
+   ! systemctl is-active --quiet sshd.service; then
+    echo "[SSH ERROR] No active OpenSSH service was detected." >&2
+    exit 1
+fi
+
+echo
+echo "[SERVICE INVENTORY] Status only; no services will be restarted here."
+
+for svc in \
+    ssh dropbear nginx xray \
+    udp-custom udpgw@7100 udpgw@7300 \
+    zivpn hysteria ws-epro fail2ban cron
+do
+    load_state=$(systemctl show "$svc.service" -p LoadState --value 2>/dev/null) ||
+        load_state="unknown"
+
+    if [[ "$load_state" != "loaded" ]]; then
+        printf '  %-18s NOT_LOADED\n' "$svc"
+    elif systemctl is-active --quiet "$svc.service"; then
+        printf '  %-18s ACTIVE\n' "$svc"
+    else
+        printf '  %-18s INACTIVE_OR_FAILED\n' "$svc"
+    fi
+done
+
+echo
+echo "[SECURITY NOTICE]"
+echo "This maintenance release does not harden the existing web/API application."
+echo "Review the existing sudo permissions, administrator authentication,"
+echo "session directory permissions, account authorization, and log-cleanup jobs."
+echo "Do not treat a successful syntax check as a security assessment."
+
+if [[ -f /etc/sudoers.d/vpn-api ]]; then
+    if grep -Eq '/(usr/)?bin/(sed|jq|systemctl)' /etc/sudoers.d/vpn-api; then
+        echo "[WARNING] Broad command permissions were detected in vpn-api sudoers."
+    fi
+fi
+
+if [[ -d /tmp/vpn_panel_sessions ]]; then
+    session_mode=$(stat -c '%a' /tmp/vpn_panel_sessions)
+
+    if (( (8#$session_mode & 0002) != 0 )); then
+        echo "[WARNING] The panel session directory is writable by other users."
+    fi
+fi
+
+if [[ -f /etc/xray/xray.key ]]; then
+    key_mode=$(stat -c '%a' /etc/xray/xray.key)
+
+    if (( (8#$key_mode & 0004) != 0 )); then
+        echo "[WARNING] The TLS private key is readable by other local users."
+    fi
+fi
+
+if [[ -f /usr/bin/clear-log ]]; then
+    if grep -Eq 'truncate|drop_caches' /usr/bin/clear-log; then
+        echo "[WARNING] Legacy destructive log/cache cleanup is still installed."
+    fi
+fi
+
+echo
+echo "[SKIP] Existing SSH/UDP/Hysteria/API application files were preserved."
+echo "[SKIP] No users, passwords, certificates, firewall rules, or cron jobs were changed."
+echo "[SKIP] The legacy installation body below this gate was not executed."
+
+exit 0
+
+# Original ssh-vpn.sh content continues below.
 # ==============================================================================
 #  ALL-IN-ONE VPN SUITE (TOEYVPN V2):
 #  SSH/WS, DROPBEAR, UDP CUSTOM, BADVPN, ZIVPN, HYSTERIA 2, WEB PANEL & CLI MENU
