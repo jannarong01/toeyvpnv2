@@ -1,189 +1,291 @@
-#!/bin/bash
-# ==============================================================================
-#  XRAY CORE & NGINX REVERSE PROXY INSTALLER - TOEYVPN V2 (SMART SSL CHECK)
-# ==============================================================================
-export DEBIAN_FRONTEND=noninteractive
+#!/usr/bin/env bash
+# TOEYVPN_SAFE_UPDATE_V1
+set -Eeuo pipefail
 
-MYIP=$(curl -sS --max-time 5 ipv4.icanhazip.com || curl -sS --max-time 5 ifconfig.me)
-DOMAIN=$(cat /etc/xray/domain 2>/dev/null || echo "$MYIP")
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
 
-systemctl stop apache2 >/dev/null 2>&1
-systemctl disable apache2 >/dev/null 2>&1
-apt-get remove --purge apache2 apache2-utils apache2-bin -y >/dev/null 2>&1
+MODE="${1:---check}"
 
-apt-get update -y
-apt-get install -y curl wget jq socat openssl nginx xz-utils ca-certificates psmisc
+BIN="/usr/local/bin/xray"
+CANONICAL="/etc/xray/config.json"
+OFFICIAL="/usr/local/etc/xray/config.json"
 
-# ติดตั้ง Xray Core อย่างถูกต้องผ่าน official script (ถ้ายังไม่มี)
-if [ ! -f /usr/local/bin/xray ]; then
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-fi
+DROPIN_DIR="/etc/systemd/system/xray.service.d"
+DROPIN="$DROPIN_DIR/99-toeyvpn-config-path.conf"
 
-mkdir -p /etc/xray /var/log/xray /usr/local/etc/xray
-touch /etc/xray/xray-exp.txt /etc/xray/xray-lock.txt /var/log/xray/access.log /var/log/xray/error.log
-chmod -R 755 /var/log/xray
-chmod 666 /var/log/xray/access.log /var/log/xray/error.log
+WORK=""
+BACKUP=""
+CHANGED=0
+COMMITTED=0
+OLD_DROPIN=0
+CREATED_DIR=0
+CURRENT_CONFIG=""
 
-systemctl stop nginx >/dev/null 2>&1
-fuser -k 80/tcp >/dev/null 2>&1
-fuser -k 443/tcp >/dev/null 2>&1
+die() {
+    printf '[XRAY ERROR] %s\n' "$*" >&2
+    exit 1
+}
 
-# ตรวจสอบอัจฉริยะ: หากมี SSL อยู่แล้ว และไม่ใช่การเปลี่ยนโดเมน ข้ามการขอใหม่ทันทีเพื่อเซฟโควตา!
-if [[ -s /etc/xray/xray.crt && -s /etc/xray/xray.key ]]; then
-    echo -e "พบใบรับรอง SSL เดิมในระบบอยู่แล้ว ข้ามการขอใหม่เพื่อป้องกัน Rate Limit"
-else
-    if [[ "$DOMAIN" != "$MYIP" && -n "$DOMAIN" ]]; then
-        echo -e "กำลังขอใบรับรอง SSL ใหม่ผ่าน Let's Encrypt สำหรับโดเมน: ${DOMAIN}..."
-        if [ ! -f /root/.acme.sh/acme.sh ]; then
-            curl https://get.acme.sh | sh -s email=admin@${DOMAIN}
-            /root/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
-            /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1
+[[ $EUID -eq 0 ]] || die "Run as root."
+
+[[ "${TOEYVPN_MANAGED_UPDATE:-}" == "TOEYVPN_SAFE_UPDATE_V1" ]] ||
+    die "Run this module through setup.sh, not directly."
+
+case "$MODE" in
+    --check|--apply) ;;
+    *) die "Unsupported mode: $MODE" ;;
+esac
+
+for cmd in systemctl jq cmp runuser getent mktemp cp install; do
+    command -v "$cmd" >/dev/null ||
+        die "Missing dependency: $cmd"
+done
+
+cleanup() {
+    local rc=$?
+    local restored=1
+
+    trap - EXIT INT TERM
+    set +e
+
+    if ((rc != 0 && CHANGED == 1 && COMMITTED == 0)); then
+        printf '\n[ROLLBACK] Restoring the previous Xray service override...\n'
+
+        if ((OLD_DROPIN == 1)); then
+            if ! cp -a -- "$BACKUP/dropin.before" "$DROPIN"; then
+                restored=0
+            fi
+        else
+            if ! rm -f -- "$DROPIN"; then
+                restored=0
+            fi
         fi
-        /root/.acme.sh/acme.sh --issue -d "${DOMAIN}" --standalone -k ec-256 --force
-        /root/.acme.sh/acme.sh --installcert -d "${DOMAIN}" \
-            --fullchainpath /etc/xray/xray.crt \
-            --keypath /etc/xray/xray.key --ecc
+
+        if ((restored == 1)); then
+            if ! systemctl daemon-reload; then
+                restored=0
+            fi
+        fi
+
+        if ((restored == 1)); then
+            if ! systemctl restart xray.service; then
+                restored=0
+            fi
+        fi
+
+        if ((restored == 1)); then
+            sleep 2
+
+            if ! systemctl is-active --quiet xray.service; then
+                restored=0
+            fi
+        fi
+
+        if ((CREATED_DIR == 1)); then
+            rmdir -- "$DROPIN_DIR" 2>/dev/null
+        fi
+
+        if ((restored == 1)); then
+            printf '[ROLLBACK OK] Previous override restored; Xray is active.\n'
+        else
+            printf '[ROLLBACK FAILED] Manual recovery is required.\n' >&2
+            printf 'Backup directory: %s\n' "$BACKUP" >&2
+            printf 'Inspect: systemctl status xray --no-pager -l\n' >&2
+            printf 'Inspect: journalctl -u xray -n 80 --no-pager\n' >&2
+        fi
+    fi
+
+    if [[ -n "$WORK" && -d "$WORK" ]]; then
+        rm -rf -- "$WORK"
+    fi
+
+    exit "$rc"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+WORK=$(mktemp -d /root/.toeyvpn-xray.XXXXXXXX)
+
+[[ -x "$BIN" ]] || die "Xray binary is missing or not executable."
+[[ -s "$CANONICAL" ]] || die "Canonical configuration is missing or empty."
+
+[[ "$(systemctl show xray.service -p LoadState --value)" == "loaded" ]] ||
+    die "xray.service is not loaded. This requires repair, not an automatic fresh install."
+
+[[ "$(systemctl show xray.service -p NeedDaemonReload --value)" != "yes" ]] ||
+    die "systemd has pending unit changes. Review those changes before running this update."
+
+systemctl is-active --quiet xray.service ||
+    die "Xray is not active. Diagnose the existing failure before applying this maintenance change."
+
+read_effective_config() {
+    local exec_start
+
+    exec_start=$(systemctl show xray.service -p ExecStart --value)
+
+    case "$exec_start" in
+        *"argv[]=$BIN run -config $CANONICAL ;"*)
+            CURRENT_CONFIG="$CANONICAL"
+            ;;
+        *"argv[]=$BIN run -config $OFFICIAL ;"*)
+            CURRENT_CONFIG="$OFFICIAL"
+            ;;
+        *)
+            die "Unrecognized/custom ExecStart. Refusing to replace service arguments automatically."
+            ;;
+    esac
+}
+
+read_effective_config
+
+# Strict JSON validation is deliberate:
+# this legacy panel edits the file using jq.
+jq -e 'type == "object"' "$CANONICAL" >/dev/null ||
+    die "The panel configuration is not a valid JSON object."
+
+if [[ "$CURRENT_CONFIG" == "$OFFICIAL" ]]; then
+    [[ -s "$OFFICIAL" ]] ||
+        die "The effective official-path configuration is missing or empty."
+
+    jq -e 'type == "object"' "$OFFICIAL" >/dev/null ||
+        die "The official-path configuration is not a valid JSON object."
+
+    jq -S . "$CANONICAL" > "$WORK/canonical.normalized.json"
+    jq -S . "$OFFICIAL" > "$WORK/official.normalized.json"
+
+    if ! cmp -s "$WORK/canonical.normalized.json" \
+                   "$WORK/official.normalized.json"; then
+        die "The two Xray configurations differ. No file was overwritten. Review and merge them before migration."
     fi
 fi
 
-# หากยังไม่มีหรือขอไม่ผ่าน ให้สร้าง Self-Signed สำรองอัตโนมัติ
-if [[ ! -s /etc/xray/xray.crt || ! -s /etc/xray/xray.key ]]; then
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout /etc/xray/xray.key \
-        -out /etc/xray/xray.crt \
-        -subj "/C=TH/ST=Bangkok/L=Bangkok/O=ToeyVPNv2/CN=${DOMAIN}" >/dev/null 2>&1
-fi
-chmod 644 /etc/xray/xray.crt /etc/xray/xray.key
+# Do not change the service's execution identity.
+XRAY_USER=$(systemctl show xray.service -p User --value)
+XRAY_GROUP=$(systemctl show xray.service -p Group --value)
+DYNAMIC_USER=$(systemctl show xray.service -p DynamicUser --value)
 
-# สร้างไฟล์ config ไว้ทั้ง 2 พาธรองรับระบบเดิมและ official path
-if [ ! -f /etc/xray/config.json ]; then
-    UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-    cat <<EOF > /etc/xray/config.json
-{
-  "log": {
-    "access": "/var/log/xray/access.log",
-    "error": "/var/log/xray/error.log",
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": 10001,
-      "listen": "127.0.0.1",
-      "protocol": "vmess",
-      "settings": {
-        "clients": [
-          {
-            "id": "${UUID}",
-            "alterId": 0,
-            "email": "default"
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "/vmess"
-        }
-      }
-    },
-    {
-      "port": 10002,
-      "listen": "127.0.0.1",
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${UUID}",
-            "email": "default"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "/vless"
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "settings": {}
-    }
-  ]
-}
-EOF
+[[ "$DYNAMIC_USER" != "yes" ]] ||
+    die "DynamicUser configuration requires a separate review."
+
+[[ -n "$XRAY_USER" ]] || XRAY_USER="root"
+
+getent passwd "$XRAY_USER" >/dev/null ||
+    die "The configured Xray service user does not exist."
+
+RUN_AS=(runuser -u "$XRAY_USER")
+
+if [[ -n "$XRAY_GROUP" ]]; then
+    getent group "$XRAY_GROUP" >/dev/null ||
+        die "The configured Xray service group does not exist."
+    RUN_AS+=(-g "$XRAY_GROUP")
 fi
 
-cp -f /etc/xray/config.json /usr/local/etc/xray/config.json
+printf '[XRAY] Service user: %s\n' "$XRAY_USER"
+printf '[XRAY] Current configuration: %s\n' "$CURRENT_CONFIG"
+printf '[XRAY] Intended configuration: %s\n' "$CANONICAL"
 
-rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
-rm -f /etc/nginx/conf.d/default.conf
+# Test using the configured user, not just root.
+# This is a configuration test, not an end-to-end traffic test.
+"${RUN_AS[@]}" -- "$BIN" run -test -config "$CANONICAL"
 
-cat << 'EOF' > /etc/nginx/conf.d/xray.conf
-server {
-    listen 80;
-    listen [::]:80;
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name _;
+if [[ "$CURRENT_CONFIG" == "$CANONICAL" ]]; then
+    printf '[NO CHANGE] Xray already reads the same configuration path as the panel.\n'
+    printf '[NO RESTART] No service change is necessary.\n'
+    exit 0
+fi
 
-    ssl_certificate /etc/xray/xray.crt;
-    ssl_certificate_key /etc/xray/xray.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 1d;
-
-    client_max_body_size 0;
-    tcp_nodelay on;
-
-    location /vmess {
-        proxy_redirect off;
-        proxy_pass http://127.0.0.1:10001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-        proxy_buffering off;
-    }
-
-    location /vless {
-        proxy_redirect off;
-        proxy_pass http://127.0.0.1:10002;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-        proxy_buffering off;
-    }
-
-    location / {
-        proxy_redirect off;
-        proxy_pass http://127.0.0.1:10015;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-        proxy_buffering off;
-    }
-}
+cat > "$WORK/dropin.new" <<'EOF'
+# TOEYVPN_SAFE_UPDATE_V1
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
 EOF
+
+if [[ -e "$DROPIN" || -L "$DROPIN" ]]; then
+    [[ -f "$DROPIN" && ! -L "$DROPIN" ]] ||
+        die "The target override is not a regular file."
+
+    grep -Fqx '# TOEYVPN_SAFE_UPDATE_V1' "$DROPIN" ||
+        die "The target override is not managed by this updater. Refusing to overwrite it."
+
+    OLD_DROPIN=1
+fi
+
+printf '[PLAN] Add/update: %s\n' "$DROPIN"
+printf '[PLAN] Keep both configuration files unchanged.\n'
+printf '[PLAN] Reload systemd, then restart Xray only.\n'
+printf '[NOTICE] Existing Xray connections may briefly disconnect during restart.\n'
+
+if [[ "$MODE" == "--check" ]]; then
+    printf '[CHECK OK] Configuration-path maintenance can be attempted.\n'
+    exit 0
+fi
+
+# These backups cover this bounded change, not the entire VPS.
+install -d -m 700 -o root -g root /var/backups/toeyvpn
+BACKUP=$(mktemp -d /var/backups/toeyvpn/xray.XXXXXXXX)
+
+cp -L --preserve=mode,ownership,timestamps \
+    "$CANONICAL" "$BACKUP/canonical.before.json"
+
+cp -L --preserve=mode,ownership,timestamps \
+    "$OFFICIAL" "$BACKUP/official.before.json"
+
+systemctl cat xray.service > "$BACKUP/xray-service.before.txt"
+
+if ((OLD_DROPIN == 1)); then
+    cp -a -- "$DROPIN" "$BACKUP/dropin.before"
+fi
+
+printf '[BACKUP] %s\n' "$BACKUP"
+
+if [[ ! -d "$DROPIN_DIR" ]]; then
+    CREATED_DIR=1
+fi
+
+# From here onward, a failure triggers a rollback attempt.
+CHANGED=1
+
+install -d -m 755 -o root -g root "$DROPIN_DIR"
+
+# Stage the file in the destination directory for an atomic rename.
+TEMP_DROPIN=$(mktemp "$DROPIN_DIR/.toeyvpn.XXXXXXXX")
+
+if ! install -m 644 -o root -g root \
+        "$WORK/dropin.new" "$TEMP_DROPIN"; then
+    rm -f -- "$TEMP_DROPIN"
+    die "Could not stage the service override."
+fi
+
+if ! mv -fT -- "$TEMP_DROPIN" "$DROPIN"; then
+    rm -f -- "$TEMP_DROPIN"
+    die "Could not install the service override."
+fi
 
 systemctl daemon-reload
-systemctl enable xray nginx >/dev/null 2>&1
-systemctl restart xray nginx
+
+read_effective_config
+
+[[ "$CURRENT_CONFIG" == "$CANONICAL" ]] ||
+    die "Another unit override takes precedence. The intended ExecStart was not applied."
+
+systemctl restart xray.service
+
+# Basic stability check after restart.
+for attempt in 1 2 3; do
+    sleep 1
+
+    systemctl is-active --quiet xray.service ||
+        die "Xray did not remain active after restart."
+done
+
+COMMITTED=1
+
+printf '[APPLIED] Xray now reads %s\n' "$CANONICAL"
+printf '[HEALTH] Xray remained active during the basic post-restart check.\n'
+printf '[PRESERVED] Users, UUIDs, certificates, and configuration contents were not changed.\n'
+printf '[BACKUP] %s\n' "$BACKUP"
+printf '[NEXT] Test a real client connection; active service status alone is not sufficient.\n'
