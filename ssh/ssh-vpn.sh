@@ -855,7 +855,8 @@ systemctl restart nginx
 # 11.5 ติดตั้ง Xray Core, ออกใบรับรอง SSL (Let's Encrypt) และตั้งค่า Nginx (Port 80/443)
 if [ ! -f /usr/local/bin/xray ]; then
     echo "กำลังติดตั้ง Xray Core..."
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root >/dev/null 2>&1
+    rm -rf /etc/systemd/system/xray.service.d
 fi
 
 # สร้าง config.json ของ Xray เฉพาะกรณีติดตั้งใหม่ (ไม่ทับบัญชีลูกค้าเดิมตอนกดเมนู 27)
@@ -919,8 +920,10 @@ if [ ! -s /etc/xray/config.json ]; then
 JSON
 fi
 
-mkdir -p /var/log/xray
-chown -R nobody:nogroup /var/log/xray 2>/dev/null
+mkdir -p /var/log/xray /etc/xray /usr/local/etc/xray
+touch /var/log/xray/access.log /var/log/xray/error.log
+chmod -R 777 /var/log/xray
+chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
 
 cat << 'SVC' > /etc/systemd/system/xray.service
 [Unit]
@@ -1420,11 +1423,24 @@ if [ -f "$RESTORE_DIR/ssh-users.txt" ]; then
     done < "$RESTORE_DIR/ssh-users.txt"
 fi
 
-mkdir -p /etc/xray
-[ -f "$RESTORE_DIR/xray/config.json" ] && cp -f "$RESTORE_DIR/xray/config.json" /etc/xray/config.json
+mkdir -p /etc/xray /usr/local/etc/xray /var/log/xray
+if [ -f "$RESTORE_DIR/xray/config.json" ]; then
+    if jq . "$RESTORE_DIR/xray/config.json" >/dev/null 2>&1; then
+        cp -f "$RESTORE_DIR/xray/config.json" /etc/xray/config.json
+    else
+        echo -e "${RED}Warning: config.json from Backup is Invalid JSON! Keeping existing config.${NC}"
+    fi
+fi
 [ -f "$RESTORE_DIR/xray/xray-exp.txt" ] && cp -f "$RESTORE_DIR/xray/xray-exp.txt" /etc/xray/xray-exp.txt
 [ -f "$RESTORE_DIR/xray/xray-lock.txt" ] && cp -f "$RESTORE_DIR/xray/xray-lock.txt" /etc/xray/xray-lock.txt
 [ -f "$RESTORE_DIR/xray/limit-ssh" ] && cp -f "$RESTORE_DIR/xray/limit-ssh" /etc/xray/limit-ssh
+
+touch /var/log/xray/access.log /var/log/xray/error.log
+chmod -R 777 /var/log/xray
+chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
+rm -f /usr/local/etc/xray/config.json
+ln -s /etc/xray/config.json /usr/local/etc/xray/config.json 2>/dev/null
+rm -rf /etc/systemd/system/xray.service.d
 
 mkdir -p /etc/zivpn
 [ -f "$RESTORE_DIR/zivpn/config.json" ] && cp -f "$RESTORE_DIR/zivpn/config.json" /etc/zivpn/config.json
@@ -1446,6 +1462,7 @@ if [ -f "$RESTORE_DIR/api/api_ssh.php" ]; then
 fi
 
 rm -rf "$RESTORE_ZIP" "$RESTORE_DIR"
+systemctl daemon-reload
 systemctl restart ssh dropbear xray zivpn hysteria udp-custom nginx >/dev/null 2>&1
 
 echo -e "${GREEN}กู้คืนข้อมูลบัญชีทั้งหมด (SSH, UDP Custom, Xray, ZIVPN, Hysteria 2 และ API) เรียบร้อยแล้ว!${NC}"
@@ -2284,13 +2301,14 @@ systemctl restart udp-custom
 # ------------------------------------------------------------------------------
 mkdir -p /etc/xray /usr/local/etc/xray /var/log/xray
 touch /var/log/xray/access.log /var/log/xray/error.log
-chmod -R 755 /var/log/xray
+chmod -R 777 /var/log/xray
 chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
 
 rm -f /usr/local/etc/xray/config.json
 ln -s /etc/xray/config.json /usr/local/etc/xray/config.json
 
-sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service /etc/systemd/system/xray.service.d/*.conf 2>/dev/null
+rm -rf /etc/systemd/system/xray.service.d
+sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service 2>/dev/null
 systemctl daemon-reload
 systemctl enable xray nginx >/dev/null 2>&1
 systemctl restart xray nginx
