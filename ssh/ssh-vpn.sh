@@ -853,14 +853,15 @@ netfilter-persistent reload >/dev/null 2>&1
 systemctl restart nginx
 
 # 11.5 ติดตั้ง Xray Core, ออกใบรับรอง SSL (Let's Encrypt) และตั้งค่า Nginx (Port 80/443)
-if [ ! -f /usr/local/bin/xray ]; then
+if [ ! -s /usr/local/bin/xray ]; then
     echo "กำลังติดตั้ง Xray Core..."
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root >/dev/null 2>&1
-    rm -rf /etc/systemd/system/xray.service.d
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+    chmod +x /usr/local/bin/xray 2>/dev/null
+    rm -rf /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
 fi
 
 # สร้าง config.json ของ Xray เฉพาะกรณีติดตั้งใหม่ (ไม่ทับบัญชีลูกค้าเดิมตอนกดเมนู 27)
-if [ ! -s /etc/xray/config.json ]; then
+if [ ! -s /etc/xray/config.json ] || ! jq . /etc/xray/config.json >/dev/null 2>&1; then
     UUID=$(cat /proc/sys/kernel/random/uuid)
     cat <<JSON > /etc/xray/config.json
 {
@@ -1424,12 +1425,75 @@ if [ -f "$RESTORE_DIR/ssh-users.txt" ]; then
 fi
 
 mkdir -p /etc/xray /usr/local/etc/xray /var/log/xray
+if [ ! -s /usr/local/bin/xray ]; then
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+    chmod +x /usr/local/bin/xray 2>/dev/null
+fi
 if [ -f "$RESTORE_DIR/xray/config.json" ]; then
     if jq . "$RESTORE_DIR/xray/config.json" >/dev/null 2>&1; then
         cp -f "$RESTORE_DIR/xray/config.json" /etc/xray/config.json
     else
-        echo -e "${RED}Warning: config.json from Backup is Invalid JSON! Keeping existing config.${NC}"
+        echo -e "${RED}Warning: config.json from Backup is Invalid JSON!${NC}"
     fi
+fi
+if [ ! -s /etc/xray/config.json ] || ! jq . /etc/xray/config.json >/dev/null 2>&1; then
+    UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
+    cat <<JSON > /etc/xray/config.json
+{
+  "log": {
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log",
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 10001,
+      "listen": "127.0.0.1",
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "alterId": 0,
+            "email": "default"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/vmess"
+        }
+      }
+    },
+    {
+      "port": 10002,
+      "listen": "127.0.0.1",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "email": "default"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/vless"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+}
+JSON
 fi
 [ -f "$RESTORE_DIR/xray/xray-exp.txt" ] && cp -f "$RESTORE_DIR/xray/xray-exp.txt" /etc/xray/xray-exp.txt
 [ -f "$RESTORE_DIR/xray/xray-lock.txt" ] && cp -f "$RESTORE_DIR/xray/xray-lock.txt" /etc/xray/xray-lock.txt
@@ -1439,8 +1503,9 @@ touch /var/log/xray/access.log /var/log/xray/error.log
 chmod -R 777 /var/log/xray
 chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
 rm -f /usr/local/etc/xray/config.json
-ln -s /etc/xray/config.json /usr/local/etc/xray/config.json 2>/dev/null
-rm -rf /etc/systemd/system/xray.service.d
+ln -sf /etc/xray/config.json /usr/local/etc/xray/config.json 2>/dev/null
+rm -rf /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
+killall -9 xray 2>/dev/null || true
 
 mkdir -p /etc/zivpn
 [ -f "$RESTORE_DIR/zivpn/config.json" ] && cp -f "$RESTORE_DIR/zivpn/config.json" /etc/zivpn/config.json
@@ -2299,16 +2364,81 @@ systemctl restart udp-custom
 # ------------------------------------------------------------------------------
 #  FIX 2: บังคับสิทธิ์ Xray, เชื่อม Symlink และรีสตาร์ทให้สถานะ [ON] 100%
 # ------------------------------------------------------------------------------
+if [ ! -s /usr/local/bin/xray ]; then
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+    chmod +x /usr/local/bin/xray 2>/dev/null
+fi
+if [ ! -s /etc/xray/config.json ] || ! jq . /etc/xray/config.json >/dev/null 2>&1; then
+    UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
+    cat <<JSON > /etc/xray/config.json
+{
+  "log": {
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log",
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 10001,
+      "listen": "127.0.0.1",
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "alterId": 0,
+            "email": "default"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/vmess"
+        }
+      }
+    },
+    {
+      "port": 10002,
+      "listen": "127.0.0.1",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "email": "default"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/vless"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+}
+JSON
+fi
 mkdir -p /etc/xray /usr/local/etc/xray /var/log/xray
 touch /var/log/xray/access.log /var/log/xray/error.log
 chmod -R 777 /var/log/xray
 chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
 
 rm -f /usr/local/etc/xray/config.json
-ln -s /etc/xray/config.json /usr/local/etc/xray/config.json
+ln -sf /etc/xray/config.json /usr/local/etc/xray/config.json 2>/dev/null
 
-rm -rf /etc/systemd/system/xray.service.d
-sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service 2>/dev/null
+rm -rf /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
+sed -i -E 's/User=(nobody|xray)/User=root/g' /etc/systemd/system/xray.service 2>/dev/null
+sed -i -E 's/Group=(nogroup|xray)/Group=root/g' /etc/systemd/system/xray.service 2>/dev/null
+killall -9 xray 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable xray nginx >/dev/null 2>&1
 systemctl restart xray nginx
