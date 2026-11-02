@@ -516,6 +516,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                 const labels = {
                     'ssh': 'OpenSSH (22)',
                     'dropbear': 'Dropbear (109/143)',
+                    'stunnel4': 'Stunnel4 (444/777/10443)',
                     'nginx': 'Nginx (80/443)',
                     'xray': 'Xray Core',
                     'udp-custom': 'UDP Custom (7200)',
@@ -553,6 +554,7 @@ Password      : ${pass}
 ---------------------------------
 • SSH / WS Port : 22, 80, 443
 • Dropbear Port : 109, 143
+• Stunnel4 SSL  : 444, 777 (พอร์ตภายใน 10443)
 • UDP Custom    : 1-5999, 50001-65535
 • BadVPN UDPGW  : 7300
 • ZIVPN UDP     : 5667, 6000-19999 (รหัส: ${pass})

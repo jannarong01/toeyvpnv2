@@ -30,7 +30,7 @@ sysctl -p >/dev/null 2>&1
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 apt-get update -y
-apt-get install -y nginx dropbear vnstat curl wget jq python3 net-tools openssl socat cron fail2ban iptables iptables-persistent psmisc dos2unix php-fpm php-cli php-curl zip unzip rsyslog tar util-linux
+apt-get install -y nginx dropbear stunnel4 vnstat curl wget jq python3 net-tools openssl socat cron fail2ban iptables iptables-persistent psmisc dos2unix php-fpm php-cli php-curl zip unzip rsyslog tar util-linux
 
 # ติดตั้ง Speedtest by Ookla (Official CLI)
 if [ ! -s /usr/local/bin/speedtest ]; then
@@ -532,7 +532,7 @@ case "$ACTION" in
             SSH_ON=$((SSH_ON + c))
         done
 
-        Services=("ssh" "dropbear" "nginx" "xray" "udp-custom" "udpgw@7300" "zivpn" "hysteria" "ws-epro" "fail2ban")
+        Services=("ssh" "dropbear" "stunnel4" "nginx" "xray" "udp-custom" "udpgw@7300" "zivpn" "hysteria" "ws-epro" "fail2ban")
         SVC_JSON="{"
         first=1
         for s in "${Services[@]}"; do
@@ -1154,6 +1154,63 @@ systemctl daemon-reload
 systemctl enable ws-epro >/dev/null 2>&1
 systemctl restart ws-epro
 
+# 13.5 ติดตั้งและตั้งค่า Stunnel4 (SSL/TLS Wrapper พอร์ต 444, 777 และพอร์ตภายใน 10443)
+echo "กำลังตั้งค่า Stunnel4 (SSL/TLS Wrapper พอร์ต 444, 777, 10443)..."
+mkdir -p /etc/stunnel /var/run/stunnel4
+cat /etc/xray/xray.key /etc/xray/xray.crt > /etc/stunnel/stunnel.pem 2>/dev/null
+chmod 600 /etc/stunnel/stunnel.pem 2>/dev/null
+
+sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4 2>/dev/null
+grep -qxF 'ENABLED=1' /etc/default/stunnel4 2>/dev/null || echo 'ENABLED=1' >> /etc/default/stunnel4 2>/dev/null
+
+cat << 'EOF' > /etc/stunnel/stunnel.conf
+pid = /var/run/stunnel4.pid
+cert = /etc/stunnel/stunnel.pem
+client = no
+socket = a:SO_REUSEADDR=1
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1
+
+[dropbear-ssl-444]
+accept = 444
+connect = 127.0.0.1:109
+
+[openssh-ssl-777]
+accept = 777
+connect = 127.0.0.1:22
+
+[dropbear-ssl-10443]
+accept = 10443
+connect = 127.0.0.1:109
+EOF
+
+cat << 'EOF' > /etc/systemd/system/stunnel4.service
+[Unit]
+Description=SSL tunnel for network daemons (Stunnel4)
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/stunnel4.pid
+ExecStart=/usr/bin/stunnel4 /etc/stunnel/stunnel.conf
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+for sport in 444 777 10443; do
+    if ! iptables -C INPUT -p tcp --dport "$sport" -j ACCEPT 2>/dev/null; then
+        iptables -I INPUT -p tcp --dport "$sport" -j ACCEPT
+    fi
+done
+
+systemctl daemon-reload
+systemctl enable stunnel4 >/dev/null 2>&1
+systemctl restart stunnel4 >/dev/null 2>&1
+
+
 # 14. สร้างสคริปต์ลบบัญชีหมดอายุอัตโนมัติ (xp)
 cat << 'EOF' > /usr/bin/xp
 #!/bin/bash
@@ -1528,7 +1585,9 @@ fi
 
 rm -rf "$RESTORE_ZIP" "$RESTORE_DIR"
 systemctl daemon-reload
-systemctl restart ssh dropbear xray zivpn hysteria udp-custom nginx >/dev/null 2>&1
+cat /etc/xray/xray.key /etc/xray/xray.crt > /etc/stunnel/stunnel.pem 2>/dev/null
+chmod 600 /etc/stunnel/stunnel.pem 2>/dev/null
+systemctl restart ssh dropbear stunnel4 xray zivpn hysteria udp-custom nginx >/dev/null 2>&1
 
 echo -e "${GREEN}กู้คืนข้อมูลบัญชีทั้งหมด (SSH, UDP Custom, Xray, ZIVPN, Hysteria 2 และ API) เรียบร้อยแล้ว!${NC}"
 EOF
@@ -1585,6 +1644,7 @@ echo -e "           ${CYAN}STATUS RUNNING SERVICE${NC}"
 echo -e "${YELLOW}=========================================${NC}"
 echo -e " OpenSSH Service          : $(check_status ssh)"
 echo -e " Dropbear Service         : $(check_status dropbear)"
+echo -e " Stunnel4 (444/777/10443) : $(check_status stunnel4)"
 echo -e " Nginx Proxy (80 / 443)   : $(check_status nginx)"
 echo -e " Web Panel & API (8081)   : ${API_STAT}"
 echo -e " Xray Core (Vmess/Vless)  : $(check_status xray)"
@@ -1695,6 +1755,7 @@ case $opt in
         echo -e "Username     : $user"
         echo -e "Password     : $pass"
         echo -e "OpenSSH      : 22 | Dropbear : 109, 143"
+        echo -e "Stunnel4 SSL : 444, 777 (พอร์ตภายใน 10443)"
         echo -e "WS Port      : 80 | WS TLS   : 443"
         echo -e "UDP Custom   : 1-5999, 50001-65535 (พอร์ตภายใน 7200)"
         echo -e "BadVPN UDPGW : 7100, 7300"
@@ -2186,15 +2247,17 @@ JSON
         /root/.acme.sh/acme.sh --installcert -d "${newdom}" \
             --fullchainpath /etc/xray/xray.crt \
             --keypath /etc/xray/xray.key --ecc
+        cat /etc/xray/xray.key /etc/xray/xray.crt > /etc/stunnel/stunnel.pem 2>/dev/null
+        chmod 600 /etc/stunnel/stunnel.pem 2>/dev/null
         systemctl start nginx
-        systemctl restart xray hysteria
+        systemctl restart xray hysteria stunnel4
         echo -e "${GREEN}อัปเดตโดเมนและติดตั้ง SSL สำหรับ Xray และ Hysteria 2 เรียบร้อยแล้ว!${NC}"
         ;;
     22)
         running
         ;;
     23)
-        systemctl restart rsyslog ssh dropbear nginx php*-fpm xray zivpn hysteria udp-custom ws-epro udpgw@7100 udpgw@7300 fail2ban cron
+        systemctl restart rsyslog ssh dropbear stunnel4 nginx php*-fpm xray zivpn hysteria udp-custom ws-epro udpgw@7100 udpgw@7300 fail2ban cron
         echo -e "${GREEN}รีสตาร์ทบริการทั้งหมดเรียบร้อยแล้ว!${NC}"
         ;;
     24)
@@ -2439,8 +2502,13 @@ rm -rf /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
 sed -i -E 's/User=(nobody|xray)/User=root/g' /etc/systemd/system/xray.service 2>/dev/null
 sed -i -E 's/Group=(nogroup|xray)/Group=root/g' /etc/systemd/system/xray.service 2>/dev/null
 killall -9 xray 2>/dev/null || true
+if [ -s /etc/xray/xray.key ] && [ -s /etc/xray/xray.crt ]; then
+    mkdir -p /etc/stunnel
+    cat /etc/xray/xray.key /etc/xray/xray.crt > /etc/stunnel/stunnel.pem 2>/dev/null
+    chmod 600 /etc/stunnel/stunnel.pem 2>/dev/null
+fi
 systemctl daemon-reload
-systemctl enable xray nginx >/dev/null 2>&1
-systemctl restart xray nginx
+systemctl enable stunnel4 xray nginx >/dev/null 2>&1
+systemctl restart stunnel4 xray nginx
 
 echo "✅ All-in-One VPN Suite + Modern Web Dashboard (Port 8081) Installed Successfully!"

@@ -52,7 +52,7 @@ done
 dpkg --configure -a >/dev/null 2>&1
 
 apt-get update -y
-apt-get install -y wget curl jq dos2unix openssl net-tools chrony socat cron rsyslog zip unzip psmisc
+apt-get install -y wget curl jq dos2unix openssl net-tools chrony socat cron rsyslog zip unzip psmisc stunnel4
 ln -fs /usr/share/zoneinfo/Asia/Bangkok /etc/localtime
 systemctl enable chrony >/dev/null 2>&1
 systemctl restart chrony
@@ -86,7 +86,7 @@ fi
 rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
 chmod +x /usr/bin/menu /usr/bin/running 2>/dev/null
 systemctl daemon-reload
-systemctl restart rsyslog ssh dropbear nginx php*-fpm xray zivpn hysteria udp-custom ws-epro udpgw@7100 udpgw@7300 fail2ban cron >/dev/null 2>&1
+systemctl restart rsyslog ssh dropbear stunnel4 nginx php*-fpm xray zivpn hysteria udp-custom ws-epro udpgw@7100 udpgw@7300 fail2ban cron >/dev/null 2>&1
 
 grep -qxF 'echo -e "พิมพ์คำสั่ง \033[0;32mmenu\033[0m เพื่อเข้าสู่หน้าจัดการระบบ VPN"' /root/.bashrc || \
 echo 'echo -e "พิมพ์คำสั่ง \033[0;32mmenu\033[0m เพื่อเข้าสู่หน้าจัดการระบบ VPN"' >> /root/.bashrc
@@ -100,6 +100,7 @@ echo -e "${YELLOW}==========================================================${NC
 echo -e " IP Address        : ${GREEN}${MYIP}${NC}"
 echo -e " Domain            : ${GREEN}${DOMAIN}${NC}"
 echo -e " OpenSSH / Dropbear: 22 / 109, 143"
+echo -e " Stunnel4 SSL/TLS  : 444, 777 (พอร์ตภายใน 10443)"
 echo -e " SSH WebSocket     : 80 (HTTP), 443 (SSL/TLS)"
 echo -e " UDP Custom        : 1-65535 (Internal Port 7200)"
 echo -e " BadVPN UDPGW      : 7100, 7300"
