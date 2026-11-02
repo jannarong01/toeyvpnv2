@@ -129,6 +129,12 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
+    <script src="qrcode.min.js"></script>
+    <script>
+        if (typeof QRCode === 'undefined') {
+            document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>');
+        }
+    </script>
     <style>
         * { font-family: 'Prompt', 'Plus Jakarta Sans', sans-serif; }
         body {
@@ -464,6 +470,166 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
         </div>
     </div>
 
+    <!-- Xray QR Code Modal -->
+    <div id="xray-qr-modal" onclick="if(event.target===this)closeXrayQrModal()" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
+        <div class="glass-card border border-white/15 rounded-3xl max-w-4xl w-full p-4 sm:p-6 space-y-4 shadow-2xl my-auto">
+            <!-- Modal Header -->
+            <div class="flex items-start justify-between border-b border-white/10 pb-4">
+                <div class="space-y-1">
+                    <div class="flex items-center gap-2.5">
+                        <div class="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-xl shadow-inner">
+                            <i class="ri-qr-code-line"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-sm sm:text-base text-white flex items-center gap-2">
+                                <span>QR Code & ลิงก์เชื่อมต่อ:</span>
+                                <span id="xray-qr-username" class="text-cyan-400 font-mono"></span>
+                            </h3>
+                            <p class="text-[11px] text-slate-400">สแกนผ่านแอป v2rayNG, Shadowrocket, Streisand, sing-box หรือคลิกรูปเพื่อคัดลอก</p>
+                        </div>
+                    </div>
+                    <div class="text-[11px] sm:text-xs text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-1 pt-1">
+                        <span><i class="ri-calendar-line text-cyan-400"></i> หมดอายุ: <b id="xray-qr-exp" class="text-slate-200"></b></span>
+                        <span><i class="ri-key-line text-cyan-400"></i> UUID: <span id="xray-qr-uuid" class="text-slate-300 font-mono text-[10px]"></span></span>
+                    </div>
+                </div>
+                <button onclick="closeXrayQrModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition">
+                    <i class="ri-close-line text-2xl"></i>
+                </button>
+            </div>
+
+            <!-- Hint Box -->
+            <div class="text-xs text-cyan-200 bg-cyan-950/40 border border-cyan-500/20 rounded-xl p-3 flex items-center gap-2.5">
+                <i class="ri-information-line text-cyan-400 text-lg shrink-0"></i>
+                <span>แตะหรือคลิกที่ <b>รูป QR Code</b> ใดก็ได้เพื่อคัดลอกลิงก์ทันที หรือกดปุ่ม <b>บันทึกรูป QR (.png)</b> เพื่อดาวน์โหลดไฟล์ภาพเก็บไว้</span>
+            </div>
+
+            <!-- 4 Responsive QR Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                <!-- 1. Vmess TLS -->
+                <div class="bg-slate-950/70 border border-cyan-500/20 rounded-2xl p-3.5 flex flex-col items-center text-center space-y-3">
+                    <div class="w-full flex items-center justify-between">
+                        <span class="text-xs font-bold text-cyan-300 flex items-center gap-1">
+                            <i class="ri-shield-keyhole-line"></i> Vmess TLS
+                        </span>
+                        <span class="text-[10px] bg-cyan-500/20 text-cyan-300 font-semibold px-2 py-0.5 rounded-full">Port 443</span>
+                    </div>
+                    <!-- QR Box -->
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vmess_tls', 'Vmess TLS', 'badge-vmess-tls')">
+                        <div id="qr-target-vmess-tls" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-cyan-400"></div>
+                        <div id="badge-vmess-tls" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
+                            <i class="ri-checkbox-circle-fill text-3xl"></i>
+                            <span>คัดลอกแล้ว!</span>
+                        </div>
+                        <div class="absolute bottom-1 inset-x-2 text-center opacity-0 group-hover:opacity-100 transition text-[9px] text-slate-800 bg-white/95 py-0.5 rounded font-semibold shadow">
+                            <i class="ri-file-copy-line"></i> คลิกเพื่อคัดลอก
+                        </div>
+                    </div>
+                    <!-- Buttons -->
+                    <div class="w-full flex flex-col gap-1.5 pt-1">
+                        <button onclick="copyCurrentXrayLink('vmess_tls', 'Vmess TLS')" class="w-full text-xs bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                            <i class="ri-file-copy-line"></i> คัดลอกลิงก์
+                        </button>
+                        <button onclick="downloadQrFile('qr-target-vmess-tls', 'vmess-tls', 'Vmess TLS (443)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
+                            <i class="ri-download-2-line"></i> บันทึกรูป QR (.png)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 2. Vmess HTTP -->
+                <div class="bg-slate-950/70 border border-indigo-500/20 rounded-2xl p-3.5 flex flex-col items-center text-center space-y-3">
+                    <div class="w-full flex items-center justify-between">
+                        <span class="text-xs font-bold text-indigo-300 flex items-center gap-1">
+                            <i class="ri-global-line"></i> Vmess HTTP
+                        </span>
+                        <span class="text-[10px] bg-indigo-500/20 text-indigo-300 font-semibold px-2 py-0.5 rounded-full">Port 80</span>
+                    </div>
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vmess_http', 'Vmess HTTP', 'badge-vmess-http')">
+                        <div id="qr-target-vmess-http" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-indigo-400"></div>
+                        <div id="badge-vmess-http" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
+                            <i class="ri-checkbox-circle-fill text-3xl"></i>
+                            <span>คัดลอกแล้ว!</span>
+                        </div>
+                        <div class="absolute bottom-1 inset-x-2 text-center opacity-0 group-hover:opacity-100 transition text-[9px] text-slate-800 bg-white/95 py-0.5 rounded font-semibold shadow">
+                            <i class="ri-file-copy-line"></i> คลิกเพื่อคัดลอก
+                        </div>
+                    </div>
+                    <div class="w-full flex flex-col gap-1.5 pt-1">
+                        <button onclick="copyCurrentXrayLink('vmess_http', 'Vmess HTTP')" class="w-full text-xs bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                            <i class="ri-file-copy-line"></i> คัดลอกลิงก์
+                        </button>
+                        <button onclick="downloadQrFile('qr-target-vmess-http', 'vmess-http', 'Vmess HTTP (80)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
+                            <i class="ri-download-2-line"></i> บันทึกรูป QR (.png)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 3. Vless TLS -->
+                <div class="bg-slate-950/70 border border-emerald-500/20 rounded-2xl p-3.5 flex flex-col items-center text-center space-y-3">
+                    <div class="w-full flex items-center justify-between">
+                        <span class="text-xs font-bold text-emerald-300 flex items-center gap-1">
+                            <i class="ri-shield-flash-line"></i> Vless TLS
+                        </span>
+                        <span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-semibold px-2 py-0.5 rounded-full">Port 443</span>
+                    </div>
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vless_tls', 'Vless TLS', 'badge-vless-tls')">
+                        <div id="qr-target-vless-tls" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-emerald-400"></div>
+                        <div id="badge-vless-tls" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
+                            <i class="ri-checkbox-circle-fill text-3xl"></i>
+                            <span>คัดลอกแล้ว!</span>
+                        </div>
+                        <div class="absolute bottom-1 inset-x-2 text-center opacity-0 group-hover:opacity-100 transition text-[9px] text-slate-800 bg-white/95 py-0.5 rounded font-semibold shadow">
+                            <i class="ri-file-copy-line"></i> คลิกเพื่อคัดลอก
+                        </div>
+                    </div>
+                    <div class="w-full flex flex-col gap-1.5 pt-1">
+                        <button onclick="copyCurrentXrayLink('vless_tls', 'Vless TLS')" class="w-full text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                            <i class="ri-file-copy-line"></i> คัดลอกลิงก์
+                        </button>
+                        <button onclick="downloadQrFile('qr-target-vless-tls', 'vless-tls', 'Vless TLS (443)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
+                            <i class="ri-download-2-line"></i> บันทึกรูป QR (.png)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 4. Vless HTTP -->
+                <div class="bg-slate-950/70 border border-amber-500/20 rounded-2xl p-3.5 flex flex-col items-center text-center space-y-3">
+                    <div class="w-full flex items-center justify-between">
+                        <span class="text-xs font-bold text-amber-300 flex items-center gap-1">
+                            <i class="ri-cloud-line"></i> Vless HTTP
+                        </span>
+                        <span class="text-[10px] bg-amber-500/20 text-amber-300 font-semibold px-2 py-0.5 rounded-full">Port 80</span>
+                    </div>
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vless_http', 'Vless HTTP', 'badge-vless-http')">
+                        <div id="qr-target-vless-http" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-amber-400"></div>
+                        <div id="badge-vless-http" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
+                            <i class="ri-checkbox-circle-fill text-3xl"></i>
+                            <span>คัดลอกแล้ว!</span>
+                        </div>
+                        <div class="absolute bottom-1 inset-x-2 text-center opacity-0 group-hover:opacity-100 transition text-[9px] text-slate-800 bg-white/95 py-0.5 rounded font-semibold shadow">
+                            <i class="ri-file-copy-line"></i> คลิกเพื่อคัดลอก
+                        </div>
+                    </div>
+                    <div class="w-full flex flex-col gap-1.5 pt-1">
+                        <button onclick="copyCurrentXrayLink('vless_http', 'Vless HTTP')" class="w-full text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                            <i class="ri-file-copy-line"></i> คัดลอกลิงก์
+                        </button>
+                        <button onclick="downloadQrFile('qr-target-vless-http', 'vless-http', 'Vless HTTP (80)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
+                            <i class="ri-download-2-line"></i> บันทึกรูป QR (.png)
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="flex justify-end pt-2 border-t border-white/10">
+                <button onclick="closeXrayQrModal()" class="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs sm:text-sm font-medium transition">
+                    ปิดหน้าต่าง
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentDomain = location.hostname;
         let currentIp = location.hostname;
@@ -688,31 +854,44 @@ ${hysHop}`;
             loadSshUsers();
         }
 
+        let currentXrayList = [];
+        let selectedXrayUser = null;
+
         async function loadXrayUsers() {
             const res = await fetch('?ajax=list_xray');
             const list = await res.json();
+            currentXrayList = Array.isArray(list) ? list : [];
             const tbody = document.getElementById('xray-tbody');
-            if (!list.length) {
+            if (!currentXrayList.length) {
                 tbody.innerHTML = '<tr><td colspan="4" class="text-center py-8 text-slate-400">ยังไม่มีบัญชี Xray ในระบบ</td></tr>';
                 return;
             }
-            tbody.innerHTML = list.map(u => `
+            tbody.innerHTML = currentXrayList.map((u, idx) => `
                 <tr class="hover:bg-white/[0.02] transition">
                     <td class="py-3 px-4 font-semibold text-white">
-                        <div>${u.user}</div>
+                        <div class="flex items-center gap-2">
+                            <span>${u.user}</span>
+                            <span class="text-[10px] px-1.5 py-0.5 rounded font-medium ${u.status === 'Locked' ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'}">${u.status || 'Active'}</span>
+                        </div>
                         <div class="text-[10px] text-slate-500 font-mono truncate max-w-[140px]">${u.uuid}</div>
                     </td>
                     <td class="py-3 px-4 text-slate-300 whitespace-nowrap">${u.exp}</td>
-                    <td class="py-3 px-4 whitespace-nowrap space-x-1">
-                        <button onclick="copyLink('${u.vmess_tls}', 'Vmess TLS (443)')" class="text-xs bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 px-2.5 py-1 rounded-lg">Vmess TLS</button>
-                        <button onclick="copyLink('${u.vmess_http}', 'Vmess HTTP (80)')" class="text-xs bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 rounded-lg">Vmess 80</button>
-                        <button onclick="copyLink('${u.vless_tls}', 'Vless TLS (443)')" class="text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-lg">Vless TLS</button>
+                    <td class="py-3 px-4 whitespace-nowrap">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <button onclick="openXrayQrModal(${idx})" class="text-xs bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 text-slate-950 font-bold px-2.5 py-1 rounded-lg inline-flex items-center gap-1 shadow-sm transition">
+                                <i class="ri-qr-code-line text-sm"></i> QR Code
+                            </button>
+                            <button onclick="copyLink('${u.vmess_tls}', 'Vmess TLS (443)')" class="text-xs bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 px-2 py-1 rounded-lg transition">Vmess TLS</button>
+                            <button onclick="copyLink('${u.vmess_http}', 'Vmess HTTP (80)')" class="text-xs bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 px-2 py-1 rounded-lg transition">Vmess 80</button>
+                            <button onclick="copyLink('${u.vless_tls}', 'Vless TLS (443)')" class="text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2 py-1 rounded-lg transition">Vless TLS</button>
+                            <button onclick="copyLink('${u.vless_http}', 'Vless HTTP (80)')" class="text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 px-2 py-1 rounded-lg transition">Vless 80</button>
+                        </div>
                     </td>
                     <td class="py-3 px-4 text-right whitespace-nowrap space-x-1">
-                        <button onclick="renewXray('${u.user}')" class="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2 py-1 rounded-lg text-xs">
+                        <button onclick="renewXray('${u.user}')" class="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2 py-1 rounded-lg text-xs transition">
                             <i class="ri-calendar-todo-line"></i> ต่ออายุ
                         </button>
-                        <button onclick="delXray('${u.user}')" class="bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 px-2 py-1 rounded-lg text-xs">
+                        <button onclick="delXray('${u.user}')" class="bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 px-2 py-1 rounded-lg text-xs transition">
                             <i class="ri-delete-bin-line"></i>
                         </button>
                     </td>
@@ -720,17 +899,130 @@ ${hysHop}`;
             `).join('');
         }
 
+        function openXrayQrModal(idx) {
+            const u = currentXrayList[idx];
+            if (!u) return;
+            selectedXrayUser = u;
+
+            document.getElementById('xray-qr-username').textContent = u.user;
+            document.getElementById('xray-qr-exp').textContent = u.exp;
+            document.getElementById('xray-qr-uuid').textContent = u.uuid;
+
+            renderSingleQr('qr-target-vmess-tls', u.vmess_tls);
+            renderSingleQr('qr-target-vmess-http', u.vmess_http);
+            renderSingleQr('qr-target-vless-tls', u.vless_tls);
+            renderSingleQr('qr-target-vless-http', u.vless_http);
+
+            document.getElementById('xray-qr-modal').classList.remove('hidden');
+        }
+
+        function closeXrayQrModal() {
+            document.getElementById('xray-qr-modal').classList.add('hidden');
+        }
+
+        function renderSingleQr(containerId, text) {
+            const el = document.getElementById(containerId);
+            if (!el) return;
+            el.innerHTML = '';
+            if (!text) {
+                el.innerHTML = '<span class="text-xs text-slate-400">ไม่มีข้อมูล</span>';
+                return;
+            }
+            if (typeof QRCode !== 'undefined') {
+                new QRCode(el, {
+                    text: text,
+                    width: 140,
+                    height: 140,
+                    colorDark: "#000000",
+                    colorLight: "#ffffff",
+                    correctLevel: QRCode.CorrectLevel.L
+                });
+            } else {
+                el.innerHTML = '<span class="text-xs text-rose-400">QRCode JS ไม่พร้อมใช้งาน</span>';
+            }
+        }
+
+        function handleQrClick(key, label, badgeId) {
+            if (!selectedXrayUser || !selectedXrayUser[key]) return;
+            const link = selectedXrayUser[key];
+            navigator.clipboard.writeText(link);
+            showToast('คัดลอกลิงก์ ' + label + ' สำเร็จแล้ว!');
+
+            const badge = document.getElementById(badgeId);
+            if (badge) {
+                badge.classList.remove('opacity-0', 'pointer-events-none');
+                badge.classList.add('opacity-100');
+                setTimeout(() => {
+                    badge.classList.remove('opacity-100');
+                    badge.classList.add('opacity-0', 'pointer-events-none');
+                }, 1100);
+            }
+        }
+
+        function copyCurrentXrayLink(key, label) {
+            if (!selectedXrayUser || !selectedXrayUser[key]) return;
+            navigator.clipboard.writeText(selectedXrayUser[key]);
+            showToast('คัดลอกลิงก์ ' + label + ' สำเร็จแล้ว!');
+        }
+
+        function downloadQrFile(containerId, suffix, titleLabel) {
+            if (!selectedXrayUser) return;
+            const el = document.getElementById(containerId);
+            if (!el) return;
+            const canvas = el.querySelector('canvas');
+            const img = el.querySelector('img');
+            const sourceEl = canvas || img;
+            if (!sourceEl) {
+                showToast('ไม่พบรูปภาพ QR Code');
+                return;
+            }
+
+            const margin = 20;
+            const headerHeight = 32;
+            const out = document.createElement('canvas');
+            const srcWidth = sourceEl.width || 140;
+            const srcHeight = sourceEl.height || 140;
+            out.width = srcWidth + (margin * 2);
+            out.height = srcHeight + (margin * 2) + headerHeight;
+            const ctx = out.getContext('2d');
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, out.width, out.height);
+
+            ctx.fillStyle = '#0f172a';
+            ctx.font = 'bold 12px "Prompt", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${selectedXrayUser.user} • ${titleLabel}`, out.width / 2, 22);
+
+            ctx.drawImage(sourceEl, margin, margin + headerHeight - 6, srcWidth, srcHeight);
+
+            const dataUrl = out.toDataURL('image/png');
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            a.download = `${selectedXrayUser.user}-${suffix}-qr.png`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showToast(`บันทึกรูปภาพ ${selectedXrayUser.user}-${suffix}-qr.png เรียบร้อย!`);
+        }
+
         async function addXrayUser(e) {
             e.preventDefault();
+            const userInput = document.getElementById('xray-user');
+            const username = userInput.value.trim();
             const fd = new FormData();
-            fd.append('user', document.getElementById('xray-user').value);
+            fd.append('user', username);
             fd.append('days', document.getElementById('xray-days').value);
             const res = await fetch('?ajax=add_xray', { method: 'POST', body: fd });
             const r = await res.json();
             showToast(r.msg);
             if (r.success) {
-                document.getElementById('xray-user').value = '';
-                loadXrayUsers();
+                userInput.value = '';
+                await loadXrayUsers();
+                const newIdx = currentXrayList.findIndex(x => x.user === username);
+                if (newIdx !== -1) {
+                    openXrayQrModal(newIdx);
+                }
             }
         }
 
