@@ -52,7 +52,7 @@ done
 dpkg --configure -a >/dev/null 2>&1
 
 apt-get update -y
-apt-get install -y wget curl jq dos2unix openssl net-tools chrony socat cron rsyslog zip unzip psmisc stunnel4
+apt-get install -y wget curl jq dos2unix openssl net-tools chrony socat cron rsyslog zip unzip psmisc stunnel4 libnginx-mod-stream
 ln -fs /usr/share/zoneinfo/Asia/Bangkok /etc/localtime
 systemctl enable chrony >/dev/null 2>&1
 systemctl restart chrony
@@ -100,7 +100,7 @@ echo -e "${YELLOW}==========================================================${NC
 echo -e " IP Address        : ${GREEN}${MYIP}${NC}"
 echo -e " Domain            : ${GREEN}${DOMAIN}${NC}"
 echo -e " OpenSSH / Dropbear: 22 / 109, 143"
-echo -e " Stunnel4 SSL/TLS  : 444, 777 (พอร์ตภายใน 10443)"
+echo -e " Stunnel4 SSL/TLS  : 443, 444, 777 (พอร์ตภายใน 10443)"
 echo -e " SSH WebSocket     : 80 (HTTP), 443 (SSL/TLS)"
 echo -e " UDP Custom        : 1-65535 (Internal Port 7200)"
 echo -e " BadVPN UDPGW      : 7100, 7300"

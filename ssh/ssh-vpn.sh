@@ -30,7 +30,7 @@ sysctl -p >/dev/null 2>&1
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 apt-get update -y
-apt-get install -y nginx dropbear stunnel4 vnstat curl wget jq python3 net-tools openssl socat cron fail2ban iptables iptables-persistent psmisc dos2unix php-fpm php-cli php-curl zip unzip rsyslog tar util-linux
+apt-get install -y nginx dropbear stunnel4 libnginx-mod-stream vnstat curl wget jq python3 net-tools openssl socat cron fail2ban iptables iptables-persistent psmisc dos2unix php-fpm php-cli php-curl zip unzip rsyslog tar util-linux
 
 # ติดตั้ง Speedtest by Ookla (Official CLI)
 if [ ! -s /usr/local/bin/speedtest ]; then
@@ -961,13 +961,34 @@ if [[ ! "$DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ ! -d "/root/.acme.
     /usr/bin/rebuild-hysteria
 fi
 
-# สร้างไฟล์คอนฟิก Nginx พอร์ต 80 และ 443 (/vmess, /vless, และ /ssh-ws)
+# ตั้งค่า Nginx Stream บนพอร์ต 443 เพื่อแยกทราฟฟิก (Multiplex 443):
+# 1) Direct SSL (Stunnel4) -> ส่งต่อไปยัง 127.0.0.1:444 (Dropbear SSH)
+# 2) Web / Xray / SSH-WS -> ส่งต่อไปยัง 127.0.0.1:8443 (Nginx HTTPS)
+sed -i '/^stream {/,/^[[:space:]]*}/d' /etc/nginx/nginx.conf 2>/dev/null
+cat << 'STREAM_EOF' >> /etc/nginx/nginx.conf
+
+# Multiplex Port 443 for Direct SSL (Stunnel) and HTTPS (Xray/WS)
+stream {
+    map $ssl_preread_alpn_protocols $upstream_443 {
+        "~\b(h2|http/1.1)\b"  127.0.0.1:8443;
+        default               127.0.0.1:444;
+    }
+
+    server {
+        listen 443 reuseport;
+        listen [::]:443 reuseport;
+        proxy_pass $upstream_443;
+        ssl_preread on;
+    }
+}
+STREAM_EOF
+
+# สร้างไฟล์คอนฟิก Nginx พอร์ต 80 และ 8443 (/vmess, /vless, และ /ssh-ws)
 cat <<NGX > /etc/nginx/conf.d/xray.conf
 server {
     listen 80;
     listen [::]:80;
-    listen 443 ssl http2 reuseport;
-    listen [::]:443 ssl http2 reuseport;
+    listen 127.0.0.1:8443 ssl http2;
     server_name ${DOMAIN} _;
 
     ssl_certificate /etc/xray/xray.crt;
@@ -1644,7 +1665,7 @@ echo -e "           ${CYAN}STATUS RUNNING SERVICE${NC}"
 echo -e "${YELLOW}=========================================${NC}"
 echo -e " OpenSSH Service          : $(check_status ssh)"
 echo -e " Dropbear Service         : $(check_status dropbear)"
-echo -e " Stunnel4 (444/777/10443) : $(check_status stunnel4)"
+echo -e " Stunnel4 (443/444/777)   : $(check_status stunnel4)"
 echo -e " Nginx Proxy (80 / 443)   : $(check_status nginx)"
 echo -e " Web Panel & API (8081)   : ${API_STAT}"
 echo -e " Xray Core (Vmess/Vless)  : $(check_status xray)"
@@ -1755,7 +1776,7 @@ case $opt in
         echo -e "Username     : $user"
         echo -e "Password     : $pass"
         echo -e "OpenSSH      : 22 | Dropbear : 109, 143"
-        echo -e "Stunnel4 SSL : 444, 777 (พอร์ตภายใน 10443)"
+        echo -e "Stunnel4 SSL : 443, 444, 777 (พอร์ตภายใน 10443)"
         echo -e "WS Port      : 80 | WS TLS   : 443"
         echo -e "UDP Custom   : 1-5999, 50001-65535 (พอร์ตภายใน 7200)"
         echo -e "BadVPN UDPGW : 7100, 7300"
@@ -2507,6 +2528,31 @@ if [ -s /etc/xray/xray.key ] && [ -s /etc/xray/xray.crt ]; then
     cat /etc/xray/xray.key /etc/xray/xray.crt > /etc/stunnel/stunnel.pem 2>/dev/null
     chmod 600 /etc/stunnel/stunnel.pem 2>/dev/null
 fi
+
+# ตรวจสอบและเปิดใช้งาน Nginx Stream Multiplexer บนพอร์ต 443
+if ! grep -q "stream {" /etc/nginx/nginx.conf 2>/dev/null; then
+    sed -i '/^stream {/,/^[[:space:]]*}/d' /etc/nginx/nginx.conf 2>/dev/null
+    cat << 'STREAM_EOF' >> /etc/nginx/nginx.conf
+
+# Multiplex Port 443 for Direct SSL (Stunnel) and HTTPS (Xray/WS)
+stream {
+    map $ssl_preread_alpn_protocols $upstream_443 {
+        "~\b(h2|http/1.1)\b"  127.0.0.1:8443;
+        default               127.0.0.1:444;
+    }
+
+    server {
+        listen 443 reuseport;
+        listen [::]:443 reuseport;
+        proxy_pass $upstream_443;
+        ssl_preread on;
+    }
+}
+STREAM_EOF
+fi
+sed -i 's/listen 443 ssl http2 reuseport;/listen 127.0.0.1:8443 ssl http2;/g' /etc/nginx/conf.d/xray.conf 2>/dev/null
+sed -i 's/listen \[::\]:443 ssl http2 reuseport;//g' /etc/nginx/conf.d/xray.conf 2>/dev/null
+
 systemctl daemon-reload
 systemctl enable stunnel4 xray nginx >/dev/null 2>&1
 systemctl restart stunnel4 xray nginx
