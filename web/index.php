@@ -515,7 +515,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         <span class="text-[10px] bg-cyan-500/20 text-cyan-300 font-semibold px-2 py-0.5 rounded-full">Port 443</span>
                     </div>
                     <!-- QR Box -->
-                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vmess_tls', 'Vmess TLS', 'badge-vmess-tls')">
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" role="button" tabindex="0" onclick="handleQrClick('vmess_tls', 'Vmess TLS', 'badge-vmess-tls')">
                         <div id="qr-target-vmess-tls" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-cyan-400"></div>
                         <div id="badge-vmess-tls" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
                             <i class="ri-checkbox-circle-fill text-3xl"></i>
@@ -527,7 +527,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                     </div>
                     <!-- Buttons -->
                     <div class="w-full flex flex-col gap-1.5 pt-1">
-                        <button onclick="copyCurrentXrayLink('vmess_tls', 'Vmess TLS')" class="w-full text-xs bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                        <button onclick="copyCurrentXrayLink('vmess_tls', 'Vmess TLS', this)" class="w-full text-xs bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
                             <i class="ri-file-copy-line"></i> คัดลอกลิงก์
                         </button>
                         <button onclick="downloadQrFile('qr-target-vmess-tls', 'vmess-tls', 'Vmess TLS (443)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
@@ -544,7 +544,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         </span>
                         <span class="text-[10px] bg-indigo-500/20 text-indigo-300 font-semibold px-2 py-0.5 rounded-full">Port 80</span>
                     </div>
-                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vmess_http', 'Vmess HTTP', 'badge-vmess-http')">
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" role="button" tabindex="0" onclick="handleQrClick('vmess_http', 'Vmess HTTP', 'badge-vmess-http')">
                         <div id="qr-target-vmess-http" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-indigo-400"></div>
                         <div id="badge-vmess-http" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
                             <i class="ri-checkbox-circle-fill text-3xl"></i>
@@ -555,7 +555,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         </div>
                     </div>
                     <div class="w-full flex flex-col gap-1.5 pt-1">
-                        <button onclick="copyCurrentXrayLink('vmess_http', 'Vmess HTTP')" class="w-full text-xs bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                        <button onclick="copyCurrentXrayLink('vmess_http', 'Vmess HTTP', this)" class="w-full text-xs bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
                             <i class="ri-file-copy-line"></i> คัดลอกลิงก์
                         </button>
                         <button onclick="downloadQrFile('qr-target-vmess-http', 'vmess-http', 'Vmess HTTP (80)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
@@ -572,7 +572,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         </span>
                         <span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-semibold px-2 py-0.5 rounded-full">Port 443</span>
                     </div>
-                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vless_tls', 'Vless TLS', 'badge-vless-tls')">
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" role="button" tabindex="0" onclick="handleQrClick('vless_tls', 'Vless TLS', 'badge-vless-tls')">
                         <div id="qr-target-vless-tls" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-emerald-400"></div>
                         <div id="badge-vless-tls" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
                             <i class="ri-checkbox-circle-fill text-3xl"></i>
@@ -583,7 +583,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         </div>
                     </div>
                     <div class="w-full flex flex-col gap-1.5 pt-1">
-                        <button onclick="copyCurrentXrayLink('vless_tls', 'Vless TLS')" class="w-full text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                        <button onclick="copyCurrentXrayLink('vless_tls', 'Vless TLS', this)" class="w-full text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
                             <i class="ri-file-copy-line"></i> คัดลอกลิงก์
                         </button>
                         <button onclick="downloadQrFile('qr-target-vless-tls', 'vless-tls', 'Vless TLS (443)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
@@ -600,7 +600,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         </span>
                         <span class="text-[10px] bg-amber-500/20 text-amber-300 font-semibold px-2 py-0.5 rounded-full">Port 80</span>
                     </div>
-                    <div class="relative group cursor-pointer w-[160px] h-[160px]" onclick="handleQrClick('vless_http', 'Vless HTTP', 'badge-vless-http')">
+                    <div class="relative group cursor-pointer w-[160px] h-[160px]" role="button" tabindex="0" onclick="handleQrClick('vless_http', 'Vless HTTP', 'badge-vless-http')">
                         <div id="qr-target-vless-http" class="bg-white p-2 rounded-xl w-full h-full flex items-center justify-center shadow-lg transition transform group-hover:scale-[1.03] border-2 border-transparent group-hover:border-amber-400"></div>
                         <div id="badge-vless-http" class="opacity-0 pointer-events-none transition-all duration-200 absolute inset-0 bg-slate-950/90 backdrop-blur-xs rounded-xl flex flex-col items-center justify-center text-emerald-400 font-bold text-xs gap-1">
                             <i class="ri-checkbox-circle-fill text-3xl"></i>
@@ -611,7 +611,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         </div>
                     </div>
                     <div class="w-full flex flex-col gap-1.5 pt-1">
-                        <button onclick="copyCurrentXrayLink('vless_http', 'Vless HTTP')" class="w-full text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
+                        <button onclick="copyCurrentXrayLink('vless_http', 'Vless HTTP', this)" class="w-full text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 py-1.5 rounded-lg flex items-center justify-center gap-1 font-medium transition">
                             <i class="ri-file-copy-line"></i> คัดลอกลิงก์
                         </button>
                         <button onclick="downloadQrFile('qr-target-vless-http', 'vless-http', 'Vless HTTP (80)')" class="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg flex items-center justify-center gap-1 transition">
@@ -742,8 +742,7 @@ ${hysHop}`;
 
         function copyModalText() {
             const el = document.getElementById('modal-text');
-            navigator.clipboard.writeText(el.value);
-            showToast('คัดลอกข้อมูลบัญชีเรียบร้อยแล้ว!');
+            if (el) copyText(el.value, 'ข้อมูลบัญชี');
         }
 
         async function loadSshUsers() {
@@ -942,27 +941,105 @@ ${hysHop}`;
             }
         }
 
-        function handleQrClick(key, label, badgeId) {
-            if (!selectedXrayUser || !selectedXrayUser[key]) return;
-            const link = selectedXrayUser[key];
-            navigator.clipboard.writeText(link);
-            showToast('คัดลอกลิงก์ ' + label + ' สำเร็จแล้ว!');
+        // Universal copy function supporting HTTP, HTTPS, iOS Safari, Android Chrome, and Desktop
+        function copyText(text, label) {
+            if (!text) {
+                showToast('ไม่มีข้อมูลที่จะคัดลอก');
+                return false;
+            }
 
-            const badge = document.getElementById(badgeId);
-            if (badge) {
-                badge.classList.remove('opacity-0', 'pointer-events-none');
-                badge.classList.add('opacity-100');
-                setTimeout(() => {
-                    badge.classList.remove('opacity-100');
-                    badge.classList.add('opacity-0', 'pointer-events-none');
-                }, 1100);
+            let success = false;
+
+            // Strategy 1: Hidden textarea + execCommand (Universal across HTTP & mobile)
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.top = '0';
+                ta.style.left = '0';
+                ta.style.width = '2em';
+                ta.style.height = '2em';
+                ta.style.padding = '0';
+                ta.style.border = 'none';
+                ta.style.outline = 'none';
+                ta.style.boxShadow = 'none';
+                ta.style.background = 'transparent';
+                ta.style.fontSize = '16px'; // Prevent auto-zoom on iOS Safari
+                ta.style.opacity = '0.01';
+                ta.style.zIndex = '99999';
+                document.body.appendChild(ta);
+
+                ta.focus();
+                ta.select();
+                ta.setSelectionRange(0, 999999); // Required for iOS Safari
+
+                success = document.execCommand('copy');
+                document.body.removeChild(ta);
+            } catch (err) {
+                console.warn('execCommand error:', err);
+                success = false;
+            }
+
+            if (success) {
+                if (label) showToast('คัดลอก ' + label + ' สำเร็จแล้ว!');
+                return true;
+            }
+
+            // Strategy 2: Modern Clipboard API (Only on HTTPS / Secure Context)
+            if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => {
+                    if (label) showToast('คัดลอก ' + label + ' สำเร็จแล้ว!');
+                }).catch(() => {
+                    window.prompt('กรุณาคัดลอกลิงก์ด้วยตนเอง:', text);
+                });
+                return true;
+            }
+
+            // Strategy 3: Prompt dialog fallback
+            window.prompt('กรุณาคัดลอกลิงก์ด้วยตนเอง:', text);
+            return false;
+        }
+
+        function handleQrClick(key, label, badgeId, btnEl) {
+            if (!selectedXrayUser || !selectedXrayUser[key]) {
+                showToast('ไม่พบข้อมูลลิงก์ ' + label);
+                return;
+            }
+            const link = selectedXrayUser[key];
+            copyText(link, 'ลิงก์ ' + label);
+
+            // Animate checkmark badge overlay on QR code
+            if (badgeId) {
+                const badge = document.getElementById(badgeId);
+                if (badge) {
+                    badge.classList.remove('opacity-0');
+                    badge.classList.add('opacity-100');
+                    setTimeout(() => {
+                        badge.classList.remove('opacity-100');
+                        badge.classList.add('opacity-0');
+                    }, 1200);
+                }
             }
         }
 
-        function copyCurrentXrayLink(key, label) {
-            if (!selectedXrayUser || !selectedXrayUser[key]) return;
-            navigator.clipboard.writeText(selectedXrayUser[key]);
-            showToast('คัดลอกลิงก์ ' + label + ' สำเร็จแล้ว!');
+        function copyCurrentXrayLink(key, label, btnEl) {
+            if (!selectedXrayUser || !selectedXrayUser[key]) {
+                showToast('ไม่พบลิงก์ ' + label);
+                return;
+            }
+            const link = selectedXrayUser[key];
+            copyText(link, 'ลิงก์ ' + label);
+
+            if (btnEl) {
+                const origHtml = btnEl.innerHTML;
+                btnEl.innerHTML = '<i class="ri-checkbox-circle-fill text-emerald-400"></i> คัดลอกแล้ว!';
+                btnEl.classList.add('border-emerald-500/50', 'text-emerald-300', 'bg-emerald-500/20');
+                setTimeout(() => {
+                    btnEl.innerHTML = origHtml;
+                    btnEl.classList.remove('border-emerald-500/50', 'text-emerald-300', 'bg-emerald-500/20');
+                }, 1200);
+            }
         }
 
         function downloadQrFile(containerId, suffix, titleLabel) {
@@ -1049,8 +1126,7 @@ ${hysHop}`;
         }
 
         function copyLink(text, label) {
-            navigator.clipboard.writeText(text);
-            showToast('คัดลอกลิงก์ ' + label + ' แล้ว!');
+            copyText(text, label ? 'ลิงก์ ' + label : '');
         }
 
         async function clearRam() {
