@@ -1046,13 +1046,14 @@ fi
 # ตั้งค่า Nginx Stream บนพอร์ต 443 เพื่อแยกทราฟฟิก (Multiplex 443):
 # 1) Direct SSL (Stunnel4) -> ส่งต่อไปยัง 127.0.0.1:444 (Dropbear SSH)
 # 2) Web / Xray / SSH-WS -> ส่งต่อไปยัง 127.0.0.1:8443 (Nginx HTTPS)
-sed -i '/^stream {/,/^[[:space:]]*}/d' /etc/nginx/nginx.conf 2>/dev/null
-cat << 'STREAM_EOF' >> /etc/nginx/nginx.conf
+sed -i '/# Multiplex Port 443/,$d' /etc/nginx/nginx.conf 2>/dev/null
+sed -i '/stream_mux.conf/d' /etc/nginx/nginx.conf 2>/dev/null
+rm -f /etc/nginx/stream_mux.conf
 
-# Multiplex Port 443 for Direct SSL (Stunnel) and HTTPS (Xray/WS)
+cat << 'MUX' > /etc/nginx/stream_mux.conf
 stream {
     map $ssl_preread_alpn_protocols $upstream_443 {
-        "~\b(h2|http/1.1)\b"  127.0.0.1:8443;
+        "~\b(h2|http/1\.1)\b"  127.0.0.1:8443;
         default               127.0.0.1:444;
     }
 
@@ -1063,7 +1064,8 @@ stream {
         ssl_preread on;
     }
 }
-STREAM_EOF
+MUX
+echo "include /etc/nginx/stream_mux.conf;" >> /etc/nginx/nginx.conf
 
 # สร้างไฟล์คอนฟิก Nginx พอร์ต 80 และ 8443 (/vmess, /vless, และ /ssh-ws)
 cat <<NGX > /etc/nginx/conf.d/xray.conf
@@ -2654,14 +2656,12 @@ if [ -s /etc/xray/xray.key ] && [ -s /etc/xray/xray.crt ]; then
 fi
 
 # ตรวจสอบและเปิดใช้งาน Nginx Stream Multiplexer บนพอร์ต 443
-if ! grep -q "stream {" /etc/nginx/nginx.conf 2>/dev/null; then
-    sed -i '/^stream {/,/^[[:space:]]*}/d' /etc/nginx/nginx.conf 2>/dev/null
-    cat << 'STREAM_EOF' >> /etc/nginx/nginx.conf
-
-# Multiplex Port 443 for Direct SSL (Stunnel) and HTTPS (Xray/WS)
+sed -i '/# Multiplex Port 443/,$d' /etc/nginx/nginx.conf 2>/dev/null
+if [ ! -s /etc/nginx/stream_mux.conf ]; then
+    cat << 'MUX' > /etc/nginx/stream_mux.conf
 stream {
     map $ssl_preread_alpn_protocols $upstream_443 {
-        "~\b(h2|http/1.1)\b"  127.0.0.1:8443;
+        "~\b(h2|http/1\.1)\b"  127.0.0.1:8443;
         default               127.0.0.1:444;
     }
 
@@ -2672,7 +2672,10 @@ stream {
         ssl_preread on;
     }
 }
-STREAM_EOF
+MUX
+fi
+if ! grep -q "stream_mux.conf" /etc/nginx/nginx.conf 2>/dev/null; then
+    echo "include /etc/nginx/stream_mux.conf;" >> /etc/nginx/nginx.conf
 fi
 sed -i 's/listen 443 ssl http2 reuseport;/listen 127.0.0.1:8443 ssl http2;/g' /etc/nginx/conf.d/xray.conf 2>/dev/null
 sed -i 's/listen \[::\]:443 ssl http2 reuseport;//g' /etc/nginx/conf.d/xray.conf 2>/dev/null
