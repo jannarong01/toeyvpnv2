@@ -36,7 +36,7 @@ if (!empty($req['is_trial']) || !empty($req['trial'])) {
 
 if (empty($user) && !empty($pass)) {
     $user = 'zi_' . preg_replace('/[^a-zA-Z0-9]/', '', $pass);
-} elseif (!empty($user) && empty($pass)) {
+} elseif (!empty($user) && empty($pass) && $action === 'add') {
     $pass = $user;
 }
 

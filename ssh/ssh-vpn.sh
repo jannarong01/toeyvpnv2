@@ -99,7 +99,7 @@ done
 
 # 6. เตรียมโฟลเดอร์หลัก, ถามชื่อโดเมน (เฉพาะเครื่องใหม่) และสร้าง SSL เบื้องต้น
 mkdir -p /etc/xray /etc/zivpn /etc/hysteria /home/vps/public_html /root/vnext_api /root/udp
-touch /etc/xray/xray-exp.txt /etc/xray/xray-lock.txt /etc/xray/trial-exp.txt /etc/zivpn/zivpn-exp.txt /etc/zivpn/zivpn-users.txt /etc/hysteria/hys-users.txt
+touch /etc/xray/xray-exp.txt /etc/xray/xray-lock.txt /etc/xray/trial-exp.txt /etc/xray/ssh-pass.txt /etc/zivpn/zivpn-exp.txt /etc/zivpn/zivpn-users.txt /etc/hysteria/hys-users.txt
 
 MYIP=$(curl -sS ipv4.icanhazip.com)
 DOMAIN=$(cat /etc/xray/domain 2>/dev/null)
@@ -368,7 +368,7 @@ EXP=$4
 ZTMP="/tmp/zivpn_tmp_$$.json"
 
 mkdir -p /etc/xray /etc/zivpn /etc/hysteria
-touch /etc/xray/trial-exp.txt /etc/zivpn/zivpn-exp.txt /etc/zivpn/zivpn-users.txt /etc/hysteria/hys-users.txt
+touch /etc/xray/trial-exp.txt /etc/xray/ssh-pass.txt /etc/zivpn/zivpn-exp.txt /etc/zivpn/zivpn-users.txt /etc/hysteria/hys-users.txt
 
 # Wait briefly if user management processes are active
 while pgrep -x "useradd" >/dev/null 2>&1 || pgrep -x "usermod" >/dev/null 2>&1 || pgrep -x "chpasswd" >/dev/null 2>&1; do
@@ -400,11 +400,16 @@ if [ "$ACTION" = "add_trial" ]; then
     fi
 
     echo "$USER:$PASS" | /usr/sbin/chpasswd 2>/dev/null
+    /usr/bin/passwd -u "$USER" 2>/dev/null
     /usr/bin/chage -E "$SHADOW_EXP" "$USER" 2>/dev/null
     /usr/sbin/usermod -e "$SHADOW_EXP" "$USER" 2>/dev/null
 
     sed -i "/^${USER}:/d" /etc/xray/trial-exp.txt
     echo "${USER}:${EXP_TS}" >> /etc/xray/trial-exp.txt
+    if [ -n "$PASS" ]; then
+        sed -i "/^${USER}:/d" /etc/xray/ssh-pass.txt
+        echo "${USER}:${PASS}" >> /etc/xray/ssh-pass.txt
+    fi
 
     if [ -n "$PASS" ] && [ -f /etc/zivpn/config.json ]; then
         jq --arg p "$PASS" '.auth.config += [$p] | .auth.config |= unique' /etc/zivpn/config.json > "$ZTMP"
@@ -453,9 +458,14 @@ if [ "$ACTION" = "add" ]; then
     fi
 
     echo "$USER:$PASS" | /usr/sbin/chpasswd 2>/dev/null
+    /usr/bin/passwd -u "$USER" 2>/dev/null
     /usr/bin/chage -E "$SHADOW_EXP" "$USER" 2>/dev/null
     /usr/sbin/usermod -e "$SHADOW_EXP" "$USER" 2>/dev/null
     sed -i "/^${USER}:/d" /etc/xray/trial-exp.txt 2>/dev/null
+    if [ -n "$PASS" ]; then
+        sed -i "/^${USER}:/d" /etc/xray/ssh-pass.txt
+        echo "${USER}:${PASS}" >> /etc/xray/ssh-pass.txt
+    fi
 
     if [ -n "$PASS" ] && [ -f /etc/zivpn/config.json ]; then
         jq --arg p "$PASS" '.auth.config += [$p] | .auth.config |= unique' /etc/zivpn/config.json > "$ZTMP"
@@ -479,11 +489,14 @@ if [ "$ACTION" = "add" ]; then
 
 elif [ "$ACTION" = "renew" ]; then
     sed -i "/^${USER}:/d" /etc/xray/trial-exp.txt 2>/dev/null
-    ZPASS=$(grep "^${USER}:" /etc/zivpn/zivpn-users.txt | cut -d: -f2 | tail -n 1)
-    HPASS=$(grep "^${USER}:" /etc/hysteria/hys-users.txt | cut -d: -f2 | tail -n 1)
-    [ -z "$ZPASS" ] && [ -n "$PASS" ] && ZPASS="$PASS"
+    ZPASS=$(grep "^${USER}:" /etc/zivpn/zivpn-users.txt 2>/dev/null | cut -d: -f2 | tail -n 1)
+    HPASS=$(grep "^${USER}:" /etc/hysteria/hys-users.txt 2>/dev/null | cut -d: -f2 | tail -n 1)
+    SPASS=$(grep "^${USER}:" /etc/xray/ssh-pass.txt 2>/dev/null | cut -d: -f2 | tail -n 1)
     [ -z "$ZPASS" ] && [ -n "$HPASS" ] && ZPASS="$HPASS"
+    [ -z "$ZPASS" ] && [ -n "$SPASS" ] && ZPASS="$SPASS"
+    [ -n "$PASS" ] && ZPASS="$PASS"
     [ -z "$HPASS" ] && [ -n "$ZPASS" ] && HPASS="$ZPASS"
+    [ -n "$PASS" ] && HPASS="$PASS"
 
     if ! id "$USER" >/dev/null 2>&1; then
         for i in 1 2 3; do
@@ -495,11 +508,6 @@ elif [ "$ACTION" = "renew" ]; then
                 break
             fi
         done
-        if [ -n "$ZPASS" ]; then
-            echo "$USER:$ZPASS" | /usr/sbin/chpasswd 2>/dev/null
-        fi
-    elif [ -n "$PASS" ]; then
-        echo "$USER:$PASS" | /usr/sbin/chpasswd 2>/dev/null
     fi
 
     if ! id "$USER" >/dev/null 2>&1; then
@@ -507,6 +515,18 @@ elif [ "$ACTION" = "renew" ]; then
         exit 1
     fi
 
+    if [ -n "$PASS" ]; then
+        echo "$USER:$PASS" | /usr/sbin/chpasswd 2>/dev/null
+        sed -i "/^${USER}:/d" /etc/xray/ssh-pass.txt
+        echo "${USER}:${PASS}" >> /etc/xray/ssh-pass.txt
+    elif [ -n "$ZPASS" ]; then
+        echo "$USER:$ZPASS" | /usr/sbin/chpasswd 2>/dev/null
+        sed -i "/^${USER}:/d" /etc/xray/ssh-pass.txt
+        echo "${USER}:${ZPASS}" >> /etc/xray/ssh-pass.txt
+    fi
+
+    /usr/sbin/usermod -U "$USER" 2>/dev/null
+    /usr/bin/passwd -u "$USER" 2>/dev/null
     /usr/bin/chage -E "$SHADOW_EXP" "$USER" 2>/dev/null
     /usr/sbin/usermod -e "$SHADOW_EXP" "$USER" 2>/dev/null
 
@@ -654,6 +674,7 @@ case "$ACTION" in
             fi
             on_cnt=$(pgrep -u "$u" sshd 2>/dev/null | wc -l)
             pass=$(grep "^${u}:" /etc/zivpn/zivpn-users.txt 2>/dev/null | cut -d: -f2 | tail -n 1)
+            [ -z "$pass" ] && pass=$(grep "^${u}:" /etc/xray/ssh-pass.txt 2>/dev/null | cut -d: -f2 | tail -n 1)
             [ -z "$pass" ] && pass="-"
 
             [ $first -eq 0 ] && echo ","
@@ -1348,7 +1369,7 @@ if [ -s /etc/xray/xray-exp.txt ]; then
         [ -z "$x_user" ] && continue
         exp_sec=$(date -d "$x_exp" +%s 2>/dev/null)
         [ -z "$exp_sec" ] && continue
-        if [ $today_sec -ge $exp_sec ]; then
+        if [ $today_sec -gt $exp_sec ]; then
             (
                 flock -x 200
                 XTMP=$(mktemp /tmp/xray_cfg.XXXXXX.json 2>/dev/null || echo "/tmp/xray_tmp.json")
@@ -1375,7 +1396,7 @@ if [ -s /etc/zivpn/zivpn-exp.txt ]; then
         [ -z "$z_pass" ] && continue
         exp_sec=$(date -d "$z_exp" +%s 2>/dev/null)
         [ -z "$exp_sec" ] && continue
-        if [ $today_sec -ge $exp_sec ]; then
+        if [ $today_sec -gt $exp_sec ]; then
             ZTMP=$(mktemp /tmp/zivpn_cfg.XXXXXX.json 2>/dev/null || echo "/tmp/zivpn_tmp.json")
             jq --arg p "$z_pass" '.auth.config -= [$p]' /etc/zivpn/config.json > "$ZTMP" && mv "$ZTMP" /etc/zivpn/config.json
             sed -i "/^$z_pass:/d" /etc/zivpn/zivpn-exp.txt
@@ -1396,7 +1417,7 @@ if [ -s /etc/hysteria/hys-users.txt ]; then
         if [ -n "$h_exp" ]; then
             exp_sec=$(date -d "$h_exp" +%s 2>/dev/null)
             [ -z "$exp_sec" ] && exp_sec=9999999999
-            if [ $today_sec -ge $exp_sec ]; then
+            if [ $today_sec -gt $exp_sec ]; then
                 sed -i "/^$h_user:/d" /etc/hysteria/hys-users.txt
                 echo "Deleted Expired Hysteria2 Account: $h_user"
                 hys_changed=1
@@ -1507,6 +1528,7 @@ cp -f /etc/xray/config.json "$BACKUP_DIR/xray/" 2>/dev/null
 cp -f /etc/xray/xray-exp.txt "$BACKUP_DIR/xray/" 2>/dev/null
 cp -f /etc/xray/xray-lock.txt "$BACKUP_DIR/xray/" 2>/dev/null
 cp -f /etc/xray/trial-exp.txt "$BACKUP_DIR/xray/" 2>/dev/null
+cp -f /etc/xray/ssh-pass.txt "$BACKUP_DIR/xray/" 2>/dev/null
 cp -f /etc/xray/limit-ssh "$BACKUP_DIR/xray/" 2>/dev/null
 
 cp -f /etc/zivpn/config.json "$BACKUP_DIR/zivpn/" 2>/dev/null
@@ -1688,6 +1710,7 @@ fi
 [ -f "$RESTORE_DIR/xray/xray-exp.txt" ] && cp -f "$RESTORE_DIR/xray/xray-exp.txt" /etc/xray/xray-exp.txt
 [ -f "$RESTORE_DIR/xray/xray-lock.txt" ] && cp -f "$RESTORE_DIR/xray/xray-lock.txt" /etc/xray/xray-lock.txt
 [ -f "$RESTORE_DIR/xray/trial-exp.txt" ] && cp -f "$RESTORE_DIR/xray/trial-exp.txt" /etc/xray/trial-exp.txt
+[ -f "$RESTORE_DIR/xray/ssh-pass.txt" ] && cp -f "$RESTORE_DIR/xray/ssh-pass.txt" /etc/xray/ssh-pass.txt
 [ -f "$RESTORE_DIR/xray/limit-ssh" ] && cp -f "$RESTORE_DIR/xray/limit-ssh" /etc/xray/limit-ssh
 
 touch /var/log/xray/access.log /var/log/xray/error.log
@@ -1817,7 +1840,7 @@ REBOOT_STAT=$(cat /etc/xray/autoreboot-status 2>/dev/null)
 [ -z "$REBOOT_STAT" ] && REBOOT_STAT="เปิดใช้งาน (ทุกวัน เวลา 03:00 น.)"
 RAM_USAGE=$(free -m | awk 'NR==2{printf "%s/%s MB (%.1f%%)", $3,$2,$3*100/$2 }')
 mkdir -p /etc/xray /etc/zivpn /etc/hysteria
-touch /etc/xray/xray-exp.txt /etc/xray/xray-lock.txt /etc/xray/trial-exp.txt /etc/zivpn/zivpn-exp.txt /etc/zivpn/zivpn-users.txt /etc/hysteria/hys-users.txt
+touch /etc/xray/xray-exp.txt /etc/xray/xray-lock.txt /etc/xray/trial-exp.txt /etc/xray/ssh-pass.txt /etc/zivpn/zivpn-exp.txt /etc/zivpn/zivpn-users.txt /etc/hysteria/hys-users.txt
 
 clear
 echo -e "${YELLOW}☉———————————————————————————————————————————————☉${NC}"
