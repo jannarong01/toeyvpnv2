@@ -207,6 +207,8 @@ ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml
 Restart=always
 RestartSec=3
 LimitNOFILE=1000000
+StandardOutput=null
+StandardError=null
 
 [Install]
 WantedBy=multi-user.target
@@ -267,7 +269,10 @@ WorkingDirectory=/etc/zivpn
 ExecStart=/usr/local/bin/zivpn-udp server -c /etc/zivpn/config.json
 Restart=always
 RestartSec=3
-Environment=ZIVPN_LOG_LEVEL=info
+LimitNOFILE=1000000
+StandardOutput=null
+StandardError=null
+Environment=ZIVPN_LOG_LEVEL=error
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=true
@@ -337,6 +342,8 @@ ExecStart=/usr/local/bin/udp-custom server
 Restart=always
 RestartSec=3
 LimitNOFILE=1000000
+StandardOutput=null
+StandardError=null
 
 [Install]
 WantedBy=multi-user.target
@@ -370,9 +377,14 @@ ZTMP="/tmp/zivpn_tmp_$$.json"
 mkdir -p /etc/xray /etc/zivpn /etc/hysteria
 touch /etc/xray/trial-exp.txt /etc/xray/ssh-pass.txt /etc/zivpn/zivpn-exp.txt /etc/zivpn/zivpn-users.txt /etc/hysteria/hys-users.txt
 
-# Wait briefly if user management processes are active
-while pgrep -x "useradd" >/dev/null 2>&1 || pgrep -x "usermod" >/dev/null 2>&1 || pgrep -x "chpasswd" >/dev/null 2>&1; do
-    sleep 0.3
+# Wait briefly if user management processes are active (max ~3s) then clear stale locks
+for _w in 1 2 3 4 5 6 7 8 9 10; do
+    if pgrep -x "useradd" >/dev/null 2>&1 || pgrep -x "usermod" >/dev/null 2>&1 || pgrep -x "chpasswd" >/dev/null 2>&1; then
+        sleep 0.3
+    else
+        rm -f /etc/passwd.lock /etc/shadow.lock /etc/group.lock /etc/gshadow.lock /etc/subuid.lock /etc/subgid.lock 2>/dev/null
+        break
+    fi
 done
 
 if [ "$ACTION" = "add_trial" ]; then
@@ -1170,6 +1182,9 @@ User=root
 ExecStart=/usr/local/bin/badvpn-udpgw --listen-addr 127.0.0.1:%i --max-clients 1000 --max-connections-for-client 100
 Restart=on-failure
 RestartSec=3
+LimitNOFILE=1000000
+StandardOutput=null
+StandardError=null
 
 [Install]
 WantedBy=multi-user.target
@@ -1272,6 +1287,8 @@ ExecStart=/usr/bin/python3 /usr/local/bin/ws-epro
 Restart=always
 RestartSec=2
 LimitNOFILE=1000000
+StandardOutput=null
+StandardError=null
 
 [Install]
 WantedBy=multi-user.target
@@ -1293,6 +1310,7 @@ cat << 'EOF' > /etc/stunnel/stunnel.conf
 pid = /var/run/stunnel4.pid
 cert = /etc/stunnel/stunnel.pem
 client = no
+debug = 0
 socket = a:SO_REUSEADDR=1
 socket = l:TCP_NODELAY=1
 socket = r:TCP_NODELAY=1
@@ -1478,14 +1496,24 @@ done
 EOF
 chmod +x /usr/bin/tendang
 
+mkdir -p /etc/systemd/journald.conf.d
+cat << 'EOF' > /etc/systemd/journald.conf.d/99-limit.conf
+[Journal]
+SystemMaxUse=50M
+RuntimeMaxUse=30M
+MaxRetentionSec=3day
+EOF
+systemctl restart systemd-journald >/dev/null 2>&1
+
 cat << 'EOF' > /usr/bin/clear-log
 #!/bin/bash
-for logfile in /var/log/xray/access.log /var/log/xray/error.log /var/log/nginx/access.log /var/log/nginx/error.log /var/log/syslog /var/log/btmp /var/log/messages /var/log/debug; do
+for logfile in /var/log/xray/access.log /var/log/xray/error.log /var/log/nginx/access.log /var/log/nginx/error.log /var/log/syslog /var/log/syslog.1 /var/log/auth.log /var/log/daemon.log /var/log/kern.log /var/log/btmp /var/log/messages /var/log/debug /var/log/fail2ban.log; do
     if [ -f "$logfile" ]; then
-        cat /dev/null > "$logfile"
+        truncate -s 0 "$logfile" 2>/dev/null
     fi
 done
-journalctl --vacuum-size=50M >/dev/null 2>&1
+find /var/log -path /var/log/journal -prune -o -type f \( -name "*.gz" -o -name "*.1" -o -name "*.2" -o -name "*.3" \) -delete 2>/dev/null
+journalctl --vacuum-size=30M >/dev/null 2>&1
 sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
 EOF
 chmod +x /usr/bin/clear-log
@@ -2706,5 +2734,6 @@ sed -i 's/listen \[::\]:443 ssl http2 reuseport;//g' /etc/nginx/conf.d/xray.conf
 systemctl daemon-reload
 systemctl enable stunnel4 xray nginx >/dev/null 2>&1
 systemctl restart stunnel4 xray nginx
+/usr/bin/clear-log >/dev/null 2>&1
 
 echo "✅ All-in-One VPN Suite + Modern Web Dashboard (Port 8081) Installed Successfully!"
