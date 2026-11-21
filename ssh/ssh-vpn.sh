@@ -272,7 +272,7 @@ RestartSec=3
 LimitNOFILE=1000000
 StandardOutput=null
 StandardError=null
-Environment=ZIVPN_LOG_LEVEL=error
+Environment=ZIVPN_LOG_LEVEL=info
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=true
