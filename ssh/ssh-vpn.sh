@@ -911,9 +911,750 @@ case "$ACTION" in
         [ -z "$CONTENT" ] && CONTENT="กดปุ่ม 'เริ่มวัดความเร็ว' ด้านบนเพื่อทดสอบความเร็วอินเทอร์เน็ตของ VPS"
         jq -n --argjson r "$RUNNING" --arg c "$CONTENT" '{running:$r, output:$c}'
         ;;
+
+    warp_status)
+        /usr/bin/warp-route status
+        ;;
+
+    warp_install)
+        LKEY=$(echo "$2" | tr -cd 'a-zA-Z0-9_-')
+        /usr/bin/warp-route install "$LKEY"
+        ;;
+
+    warp_manual)
+        PKEY=$(echo "$2" | tr -cd 'a-zA-Z0-9+/=')
+        IPV6=$(echo "$3" | tr -cd '0-9a-fA-F:/')
+        RESV=$(echo "$4" | tr -cd '0-9,')
+        /usr/bin/warp-route manual "$PKEY" "$IPV6" "$RESV"
+        ;;
+
+    warp_endpoint)
+        EP=$(echo "$2" | tr -cd 'a-zA-Z0-9.:-')
+        /usr/bin/warp-route endpoint "$EP"
+        ;;
+
+    warp_toggle)
+        TARGET=$(echo "$2" | tr -cd 'a-z')
+        STATE=$(echo "$3" | tr -cd 'a-z')
+        if [ "$STATE" = "on" ]; then
+            /usr/bin/warp-route on "$TARGET"
+        else
+            /usr/bin/warp-route off "$TARGET"
+        fi
+        ;;
+
+    warp_add)
+        DOM=$(echo "$2" | tr -cd 'a-zA-Z0-9.:_/@!-, ')
+        /usr/bin/warp-route add "$DOM"
+        ;;
+
+    warp_del)
+        DOM=$(echo "$2" | tr -cd 'a-zA-Z0-9.:_@!-')
+        /usr/bin/warp-route del "$DOM"
+        ;;
+
+    warp_preset)
+        PTYPE=$(echo "$2" | tr -cd 'a-z')
+        /usr/bin/warp-route preset "$PTYPE"
+        ;;
+
+    warp_apply)
+        /usr/bin/warp-route apply
+        ;;
+
+    warp_test)
+        /usr/bin/warp-route test
+        ;;
+
+    warp_uninstall)
+        /usr/bin/warp-route uninstall
+        ;;
 esac
 EOF
 chmod +x /usr/bin/panel-cmd
+
+# ==============================================================================
+#  ระบบควบคุม WARP Split-Routing สำหรับ SSH + Xray (/usr/bin/warp-route)
+# ==============================================================================
+cat << 'EOF' > /usr/bin/warp-route
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export TZ="Asia/Bangkok"
+export XRAY_LOCATION_ASSET="/usr/local/share/xray"
+
+WARP_DIR="/etc/xray/warp"
+WARP_JSON="${WARP_DIR}/warp.json"
+WARP_CONF="/etc/xray/warp.conf"
+WARP_DOMAINS="/etc/xray/warp-domains.txt"
+WARP_HASH="/etc/xray/warp-applied.hash"
+XRAY_CFG="/etc/xray/config.json"
+WGCF_BIN="/usr/local/bin/wgcf"
+CGROUP_STATE="/run/warp-cgroup.state"
+
+mkdir -p /etc/xray "$WARP_DIR" /usr/local/share/xray
+touch "$WARP_DOMAINS"
+
+init_conf() {
+    if [ ! -s "$WARP_CONF" ]; then
+        local rpass
+        rpass=$(openssl rand -hex 8 2>/dev/null || echo "warp$(date +%s)")
+        cat <<CFG > "$WARP_CONF"
+XRAY_WARP=off
+SSH_WARP=off
+BLOCK_QUIC=on
+WARP_ENDPOINT=162.159.192.1:2408
+TEST_USER=warptest
+TEST_PASS=${rpass}
+CFG
+        chmod 600 "$WARP_CONF"
+    fi
+}
+
+load_conf() {
+    init_conf
+    XRAY_WARP=off
+    SSH_WARP=off
+    BLOCK_QUIC=on
+    WARP_ENDPOINT="162.159.192.1:2408"
+    TEST_USER="warptest"
+    TEST_PASS=""
+    # shellcheck disable=SC1090
+    source "$WARP_CONF" 2>/dev/null
+    [ -z "$WARP_ENDPOINT" ] && WARP_ENDPOINT="162.159.192.1:2408"
+    [ -z "$TEST_USER" ] && TEST_USER="warptest"
+    if [ -z "$TEST_PASS" ]; then
+        TEST_PASS=$(openssl rand -hex 8 2>/dev/null || echo "warp9988")
+        sed -i '/^TEST_PASS=/d' "$WARP_CONF"
+        echo "TEST_PASS=${TEST_PASS}" >> "$WARP_CONF"
+    fi
+}
+
+set_conf_val() {
+    local k="$1" v="$2"
+    init_conf
+    if grep -q "^${k}=" "$WARP_CONF" 2>/dev/null; then
+        sed -i "s|^${k}=.*|${k}=${v}|g" "$WARP_CONF"
+    else
+        echo "${k}=${v}" >> "$WARP_CONF"
+    fi
+}
+
+calc_hash() {
+    init_conf
+    { cat "$WARP_CONF" 2>/dev/null; echo "---"; sort -u "$WARP_DOMAINS" 2>/dev/null; } | md5sum | awk '{print $1}'
+}
+
+json_ok() {
+    jq -nc --arg m "$1" '{success:true, msg:$m}'
+}
+
+json_err() {
+    jq -nc --arg m "$1" '{success:false, msg:$m}'
+}
+
+normalize_domain() {
+    local raw="$1"
+    raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r\n')
+    [ -z "$raw" ] && return 1
+    case "$raw" in
+        geosite:*|domain:*|full:*|keyword:*)
+            ;;
+        regexp:*)
+            return 1
+            ;;
+        *)
+            raw="${raw#http://}"
+            raw="${raw#https://}"
+            raw="${raw%%/*}"
+            raw="${raw%%:*}"
+            [ -z "$raw" ] && return 1
+            raw="domain:${raw}"
+            ;;
+    esac
+    if ! printf '%s' "$raw" | grep -qE '^(geosite|domain|full|keyword):[a-z0-9._@!-]+$'; then
+        return 1
+    fi
+    printf '%s' "$raw"
+    return 0
+}
+
+ensure_xray_version() {
+    local ver major minor patch
+    ver=$(/usr/local/bin/xray version 2>/dev/null | head -n1 | awk '{print $2}')
+    major=$(echo "$ver" | cut -d. -f1 | tr -cd '0-9')
+    minor=$(echo "$ver" | cut -d. -f2 | tr -cd '0-9')
+    patch=$(echo "$ver" | cut -d. -f3 | tr -cd '0-9')
+    [ -z "$major" ] && major=0
+    [ -z "$minor" ] && minor=0
+    [ -z "$patch" ] && patch=0
+    if [ "$major" -lt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -lt 8 ]; } || { [ "$major" -eq 1 ] && [ "$minor" -eq 8 ] && [ "$patch" -lt 6 ]; }; then
+        bash -c "$(curl -fsSL -m 30 https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+        chmod +x /usr/local/bin/xray 2>/dev/null
+        rm -rf /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
+        systemctl daemon-reload >/dev/null 2>&1
+    fi
+}
+
+ensure_geodata() {
+    if [ ! -s /usr/local/share/xray/geosite.dat ]; then
+        curl -fsSL -m 25 -o /usr/local/share/xray/geosite.dat "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" 2>/dev/null || \
+        curl -fsSL -m 25 -o /usr/local/share/xray/geosite.dat "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" 2>/dev/null || true
+    fi
+    if [ ! -s /usr/local/share/xray/geoip.dat ]; then
+        curl -fsSL -m 25 -o /usr/local/share/xray/geoip.dat "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" 2>/dev/null || true
+    fi
+}
+
+cmd_ipt_clear() {
+    while iptables -t nat -C OUTPUT -j WARP_SSH 2>/dev/null; do
+        iptables -t nat -D OUTPUT -j WARP_SSH 2>/dev/null
+    done
+    iptables -t nat -F WARP_SSH 2>/dev/null
+    iptables -t nat -X WARP_SSH 2>/dev/null
+
+    while iptables -C OUTPUT -j WARP_QUIC 2>/dev/null; do
+        iptables -D OUTPUT -j WARP_QUIC 2>/dev/null
+    done
+    iptables -F WARP_QUIC 2>/dev/null
+    iptables -X WARP_QUIC 2>/dev/null
+
+    if command -v ip6tables >/dev/null 2>&1; then
+        while ip6tables -C OUTPUT -j WARP_SSH6 2>/dev/null; do
+            ip6tables -D OUTPUT -j WARP_SSH6 2>/dev/null
+        done
+        ip6tables -F WARP_SSH6 2>/dev/null
+        ip6tables -X WARP_SSH6 2>/dev/null
+    fi
+}
+
+cmd_ipt_apply() {
+    load_conf
+    cmd_ipt_clear
+
+    if [ "$SSH_WARP" != "on" ] || [ ! -s "$WARP_JSON" ]; then
+        return 0
+    fi
+    if ! systemctl is-active --quiet xray 2>/dev/null; then
+        return 0
+    fi
+    if ! ss -ltn 2>/dev/null | grep -qE '127\.0\.0\.1:12345[[:space:]]|:12345[[:space:]]'; then
+        return 0
+    fi
+    if [ ! -s "$WARP_DOMAINS" ]; then
+        return 0
+    fi
+
+    local myip db_cg cg_ok udpgw_cg
+    myip=$(curl -sS --max-time 3 ipv4.icanhazip.com 2>/dev/null)
+    [ -z "$myip" ] && myip=$(hostname -I | awk '{print $1}')
+
+    iptables -t nat -N WARP_SSH 2>/dev/null
+    iptables -t nat -F WARP_SSH
+    iptables -t nat -A WARP_SSH -d 0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16,224.0.0.0/4,240.0.0.0/4 -j RETURN
+    [ -n "$myip" ] && iptables -t nat -A WARP_SSH -d "$myip" -j RETURN
+    # OpenSSH sessions run under the customer's Linux UID (1000-60000)
+    iptables -t nat -A WARP_SSH -p tcp -m multiport --dports 80,443 -m owner --uid-owner 1000-60000 -j REDIRECT --to-ports 12345
+
+    # Dropbear processes run as root inside dropbear.service cgroup
+    cg_ok="false"
+    db_cg=$(systemctl show -p ControlGroup --value dropbear 2>/dev/null | sed 's|^/||')
+    [ -z "$db_cg" ] && db_cg="system.slice/dropbear.service"
+    if iptables -t nat -A WARP_SSH -p tcp -m multiport --dports 80,443 -m cgroup --path "$db_cg" -j REDIRECT --to-ports 12345 2>/dev/null; then
+        cg_ok="true"
+    fi
+    echo "$cg_ok" > "$CGROUP_STATE"
+
+    iptables -t nat -I OUTPUT 1 -j WARP_SSH
+
+    # Optional QUIC (UDP 443) block so YouTube/Google fall back to TCP -> WARP
+    if [ "$BLOCK_QUIC" = "on" ]; then
+        iptables -N WARP_QUIC 2>/dev/null
+        iptables -F WARP_QUIC
+        iptables -A WARP_QUIC -p udp --dport 443 -m owner --uid-owner 1000-60000 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+        udpgw_cg=$(systemctl show -p ControlGroup --value udpgw@7300 2>/dev/null | sed 's|^/||' | sed 's|/udpgw@7300\.service$||')
+        [ -z "$udpgw_cg" ] && udpgw_cg="system.slice/system-udpgw.slice"
+        iptables -A WARP_QUIC -p udp --dport 443 -m cgroup --path "$udpgw_cg" -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+        iptables -I OUTPUT 1 -j WARP_QUIC
+    fi
+
+    # Force IPv4 fallback if VPS has global IPv6 so traffic enters IPv4 WARP redirect
+    if command -v ip6tables >/dev/null 2>&1 && ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+        ip6tables -N WARP_SSH6 2>/dev/null
+        ip6tables -F WARP_SSH6
+        ip6tables -A WARP_SSH6 -p tcp -m multiport --dports 80,443 -m owner --uid-owner 1000-60000 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+        if [ "$cg_ok" = "true" ]; then
+            ip6tables -A WARP_SSH6 -p tcp -m multiport --dports 80,443 -m cgroup --path "$db_cg" -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+        fi
+        ip6tables -I OUTPUT 1 -j WARP_SSH6 2>/dev/null || true
+    fi
+    return 0
+}
+
+cmd_install() {
+    local lkey="$1"
+    load_conf
+    ensure_xray_version
+
+    local arch warch tag url fsize
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) warch="amd64" ;;
+        aarch64|arm64) warch="arm64" ;;
+        *) json_err "ไม่รองรับสถาปัตยกรรม CPU: $arch"; return 1 ;;
+    esac
+
+    fsize=$(stat -c%s "$WGCF_BIN" 2>/dev/null || echo 0)
+    if [ ! -x "$WGCF_BIN" ] || [ "$fsize" -lt 1000000 ]; then
+        tag=$(curl -fsSL -m 10 "https://api.github.com/repos/ViRb3/wgcf/releases/latest" 2>/dev/null | jq -r '.tag_name // empty')
+        [ -z "$tag" ] && tag="v2.2.22"
+        url="https://github.com/ViRb3/wgcf/releases/download/${tag}/wgcf_${tag#v}_linux_${warch}"
+        curl -fsSL -m 30 -o "$WGCF_BIN" "$url" 2>/dev/null || wget -4 -q --timeout=25 -O "$WGCF_BIN" "$url" 2>/dev/null
+        fsize=$(stat -c%s "$WGCF_BIN" 2>/dev/null || echo 0)
+        if [ "$fsize" -lt 1000000 ]; then
+            url="https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_${warch}"
+            curl -fsSL -m 30 -o "$WGCF_BIN" "$url" 2>/dev/null || wget -4 -q --timeout=25 -O "$WGCF_BIN" "$url" 2>/dev/null
+            fsize=$(stat -c%s "$WGCF_BIN" 2>/dev/null || echo 0)
+        fi
+        if [ "$fsize" -lt 1000000 ]; then
+            rm -f "$WGCF_BIN"
+            json_err "ดาวน์โหลด wgcf ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตของ VPS"
+            return 1
+        fi
+        chmod +x "$WGCF_BIN"
+    fi
+
+    cd "$WARP_DIR" || { json_err "เข้าโฟลเดอร์ $WARP_DIR ไม่ได้"; return 1; }
+
+    if [ ! -s "${WARP_DIR}/wgcf-account.toml" ]; then
+        local reg_out
+        reg_out=$(timeout 25 "$WGCF_BIN" register --accept-tos 2>&1)
+        if [ ! -s "${WARP_DIR}/wgcf-account.toml" ]; then
+            json_err "ลงทะเบียน WARP อัตโนมัติไม่สำเร็จ (อาจโดน Rate Limit 429 จาก Cloudflare) กรุณาลองใหม่หรือใช้โหมดใส่คีย์เอง (Manual): $(echo "$reg_out" | tail -n 1)"
+            return 1
+        fi
+    fi
+
+    local is_plus=false
+    if [ -n "$lkey" ]; then
+        sed -i "s|^license_key = .*|license_key = '${lkey}'|g" "${WARP_DIR}/wgcf-account.toml" 2>/dev/null
+        if timeout 20 "$WGCF_BIN" update >/dev/null 2>&1; then
+            is_plus=true
+        fi
+    fi
+
+    if ! timeout 20 "$WGCF_BIN" generate >/dev/null 2>&1 || [ ! -s "${WARP_DIR}/wgcf-profile.conf" ]; then
+        json_err "สร้างโปรไฟล์ WireGuard (wgcf generate) ไม่สำเร็จ"
+        return 1
+    fi
+
+    local priv pub addr_all v4 v6 dev_id tok cid resv
+    priv=$(grep -E '^PrivateKey' "${WARP_DIR}/wgcf-profile.conf" | head -n1 | awk -F'=' '{print $2}' | tr -d ' \r\n')
+    pub=$(grep -E '^PublicKey' "${WARP_DIR}/wgcf-profile.conf" | head -n1 | awk -F'=' '{print $2}' | tr -d ' \r\n')
+    addr_all=$(grep -E '^Address' "${WARP_DIR}/wgcf-profile.conf" | awk -F'=' '{print $2}' | tr ',' '\n' | tr -d ' \r')
+    v4=$(echo "$addr_all" | grep -E '^[0-9]+\.' | head -n1)
+    v6=$(echo "$addr_all" | grep ':' | head -n1)
+    [ -z "$v4" ] && v4="172.16.0.2/32"
+    [ -z "$pub" ] && pub="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+    if [ -n "$v6" ] && ! echo "$v6" | grep -q '/'; then v6="${v6}/128"; fi
+
+    if [ -z "$priv" ] || [ -z "$v6" ]; then
+        json_err "อ่าน PrivateKey หรือ IPv6 จาก wgcf-profile.conf ไม่สำเร็จ"
+        return 1
+    fi
+
+    dev_id=$(grep -E '^device_id' "${WARP_DIR}/wgcf-account.toml" | head -n1 | awk -F'=' '{print $2}' | tr -d " '\"\r\n")
+    tok=$(grep -E '^access_token' "${WARP_DIR}/wgcf-account.toml" | head -n1 | awk -F'=' '{print $2}' | tr -d " '\"\r\n")
+    resv="[0,0,0]"
+    if [ -n "$dev_id" ] && [ -n "$tok" ]; then
+        cid=$(curl -fsSL -m 10 -H "Authorization: Bearer ${tok}" -H "User-Agent: okhttp/3.12.1" "https://api.cloudflareclient.com/v0a2158/reg/${dev_id}" 2>/dev/null | jq -r '.config.client_id // empty')
+        if [ -n "$cid" ]; then
+            local rtmp
+            rtmp=$(printf '%s' "$cid" | base64 -d 2>/dev/null | od -An -tu1 | awk 'NF>=3{print "["$1","$2","$3"]"; exit}')
+            [ -n "$rtmp" ] && resv="$rtmp"
+        fi
+    fi
+
+    jq -n \
+        --arg pk "$priv" \
+        --arg a4 "$v4" \
+        --arg a6 "$v6" \
+        --arg pub "$pub" \
+        --argjson res "$resv" \
+        --argjson wp "$is_plus" \
+        '{private_key:$pk, address_v4:$a4, address_v6:$a6, public_key:$pub, reserved:$res, mtu:1280, warp_plus:$wp}' \
+        > "$WARP_JSON"
+    chmod 600 "$WARP_JSON"
+
+    cmd_apply
+}
+
+cmd_manual() {
+    local priv="$1" v6="$2" res_in="$3"
+    load_conf
+    ensure_xray_version
+    if [ -z "$priv" ] || [ -z "$v6" ]; then
+        json_err "กรุณากรอก Private Key และ IPv6 Address ให้ครบถ้วน"
+        return 1
+    fi
+    if ! echo "$v6" | grep -q '/'; then v6="${v6}/128"; fi
+    local resv="[0,0,0]"
+    if [ -n "$res_in" ]; then
+        local r1 r2 r3
+        r1=$(echo "$res_in" | cut -d, -f1 | tr -cd '0-9')
+        r2=$(echo "$res_in" | cut -d, -f2 | tr -cd '0-9')
+        r3=$(echo "$res_in" | cut -d, -f3 | tr -cd '0-9')
+        if [ -n "$r1" ] && [ -n "$r2" ] && [ -n "$r3" ]; then
+            resv="[${r1},${r2},${r3}]"
+        fi
+    fi
+    jq -n \
+        --arg pk "$priv" \
+        --arg a4 "172.16.0.2/32" \
+        --arg a6 "$v6" \
+        --arg pub "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" \
+        --argjson res "$resv" \
+        '{private_key:$pk, address_v4:$a4, address_v6:$a6, public_key:$pub, reserved:$res, mtu:1280, warp_plus:false}' \
+        > "$WARP_JSON"
+    chmod 600 "$WARP_JSON"
+    cmd_apply
+}
+
+cmd_apply() {
+    local no_restart=0
+    [ "$1" = "--no-restart" ] && no_restart=1
+    load_conf
+
+    if [ ! -s "$XRAY_CFG" ] || ! jq . "$XRAY_CFG" >/dev/null 2>&1; then
+        json_err "ไฟล์ /etc/xray/config.json ไม่ถูกต้อง"
+        return 1
+    fi
+
+    local has_geosite=0 warn_msg=""
+    if grep -q '^geosite:' "$WARP_DOMAINS" 2>/dev/null; then
+        ensure_geodata
+        if [ -s /usr/local/share/xray/geosite.dat ]; then
+            has_geosite=1
+        else
+            warn_msg=" (ข้ามรายการ geosite เนื่องจากโหลด geosite.dat ไม่สำเร็จ)"
+        fi
+    fi
+
+    local domains_json="[]"
+    if [ -s "$WARP_DOMAINS" ]; then
+        if [ "$has_geosite" -eq 1 ]; then
+            domains_json=$(grep -v '^[[:space:]]*$' "$WARP_DOMAINS" | sort -u | jq -R . | jq -s .)
+        else
+            domains_json=$(grep -v '^[[:space:]]*$' "$WARP_DOMAINS" | grep -v '^geosite:' | sort -u | jq -R . | jq -s .)
+        fi
+    fi
+
+    local has_warp=0
+    [ -s "$WARP_JSON" ] && jq . "$WARP_JSON" >/dev/null 2>&1 && has_warp=1
+
+    local err_out=""
+    (
+        flock -x 200
+        local tmp_cfg
+        tmp_cfg=$(mktemp /tmp/xray_warp_cfg.XXXXXX.json)
+
+        if [ "$has_warp" -eq 1 ]; then
+            local pk a4 a6 pub resv dom_cnt
+            pk=$(jq -r '.private_key' "$WARP_JSON")
+            a4=$(jq -r '.address_v4 // "172.16.0.2/32"' "$WARP_JSON")
+            a6=$(jq -r '.address_v6' "$WARP_JSON")
+            pub=$(jq -r '.public_key // "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="' "$WARP_JSON")
+            resv=$(jq -c '.reserved // [0,0,0]' "$WARP_JSON")
+            dom_cnt=$(echo "$domains_json" | jq 'length')
+
+            jq \
+                --arg pk "$pk" \
+                --arg a4 "$a4" \
+                --arg a6 "$a6" \
+                --arg pub "$pub" \
+                --arg ep "$WARP_ENDPOINT" \
+                --argjson resv "$resv" \
+                --arg tu "$TEST_USER" \
+                --arg tp "$TEST_PASS" \
+                --arg xon "$XRAY_WARP" \
+                --arg son "$SSH_WARP" \
+                --argjson doms "$domains_json" \
+                --argjson dcnt "$dom_cnt" '
+                .inbounds[0].tag = "vmess-in" |
+                .inbounds[0].sniffing = {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true} |
+                .inbounds[1].tag = "vless-in" |
+                .inbounds[1].sniffing = {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true} |
+                .inbounds = ([.inbounds[] | select((.tag // "") != "ssh-redir" and (.tag // "") != "warp-test")] + [
+                    {
+                        "tag": "ssh-redir",
+                        "listen": "127.0.0.1",
+                        "port": 12345,
+                        "protocol": "dokodemo-door",
+                        "settings": {"network": "tcp", "followRedirect": true},
+                        "streamSettings": {"sockopt": {"tproxy": "redirect"}},
+                        "sniffing": {"enabled": true, "destOverride": ["http", "tls"], "routeOnly": true}
+                    },
+                    {
+                        "tag": "warp-test",
+                        "listen": "127.0.0.1",
+                        "port": 40000,
+                        "protocol": "socks",
+                        "settings": {"auth": "password", "accounts": [{"user": $tu, "pass": $tp}], "udp": false}
+                    }
+                ]) |
+                .outbounds = [
+                    {"protocol": "freedom", "tag": "direct"},
+                    {"protocol": "blackhole", "tag": "blocked"},
+                    {
+                        "protocol": "wireguard",
+                        "tag": "warp",
+                        "settings": {
+                            "secretKey": $pk,
+                            "address": [$a4, $a6],
+                            "peers": [{
+                                "publicKey": $pub,
+                                "allowedIPs": ["0.0.0.0/0", "::/0"],
+                                "endpoint": $ep,
+                                "keepAlive": 30
+                            }],
+                            "reserved": $resv,
+                            "mtu": 1280,
+                            "domainStrategy": "ForceIPv4",
+                            "noKernelTun": true
+                        }
+                    }
+                ] |
+                .routing = {
+                    "domainStrategy": "AsIs",
+                    "rules": (
+                        [{"type": "field", "inboundTag": ["warp-test"], "outboundTag": "warp"}]
+                        + (if ($xon == "on" and $dcnt > 0) then [{"type": "field", "inboundTag": ["vmess-in", "vless-in"], "domain": $doms, "outboundTag": "warp"}] else [] end)
+                        + (if ($son == "on" and $dcnt > 0) then [{"type": "field", "inboundTag": ["ssh-redir"], "domain": $doms, "outboundTag": "warp"}] else [] end)
+                        + [{"type": "field", "inboundTag": ["ssh-redir"], "outboundTag": "direct"}]
+                    )
+                }
+                ' "$XRAY_CFG" > "$tmp_cfg"
+        else
+            jq '
+                .inbounds = [.inbounds[] | select((.tag // "") != "ssh-redir" and (.tag // "") != "warp-test")] |
+                .outbounds = [{"protocol": "freedom", "tag": "direct"}] |
+                del(.routing)
+            ' "$XRAY_CFG" > "$tmp_cfg"
+        fi
+
+        if [ ! -s "$tmp_cfg" ]; then
+            rm -f "$tmp_cfg"
+            exit 2
+        fi
+        if ! XRAY_LOCATION_ASSET=/usr/local/share/xray /usr/local/bin/xray run -test -config "$tmp_cfg" >/tmp/warp_xray_test.err 2>&1; then
+            rm -f "$tmp_cfg"
+            exit 3
+        fi
+        mv "$tmp_cfg" "$XRAY_CFG"
+        chmod 644 "$XRAY_CFG"
+    ) 200>/var/lock/xray-config.lock
+
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+        err_out=$(tail -n 2 /tmp/warp_xray_test.err 2>/dev/null | tr '\n' ' ')
+        rm -f /tmp/warp_xray_test.err
+        json_err "ตรวจสอบคอนฟิก Xray ไม่ผ่าน (คงค่าเดิมไว้ให้แล้ว): ${err_out}"
+        return 1
+    fi
+    rm -f /tmp/warp_xray_test.err
+    calc_hash > "$WARP_HASH"
+
+    if [ "$no_restart" -eq 0 ]; then
+        systemctl restart xray >/dev/null 2>&1
+        for _t in 1 2 3 4 5 6; do
+            if systemctl is-active --quiet xray && { [ "$has_warp" -eq 0 ] || ss -ltn 2>/dev/null | grep -q ':12345 '; }; then
+                break
+            fi
+            sleep 0.5
+        done
+        cmd_ipt_apply
+    fi
+
+    json_ok "บันทึกคอนฟิกและรีสตาร์ท Xray เรียบร้อยแล้ว${warn_msg}"
+}
+
+cmd_add() {
+    local raw_input="$1" added=0 skipped=0
+    local token norm
+    for token in $(printf '%s' "$raw_input" | tr ',' ' '); do
+        norm=$(normalize_domain "$token") || { skipped=$((skipped + 1)); continue; }
+        if ! grep -qxF "$norm" "$WARP_DOMAINS" 2>/dev/null; then
+            echo "$norm" >> "$WARP_DOMAINS"
+            added=$((added + 1))
+        fi
+    done
+    if [ "$added" -eq 0 ] && [ "$skipped" -gt 0 ]; then
+        json_err "รูปแบบโดเมนไม่ถูกต้อง (ห้ามใช้ regexp: หรืออักขระพิเศษ)"
+        return 1
+    fi
+    if [ "$added" -eq 0 ]; then
+        json_ok "โดเมนนี้มีอยู่ในรายการแล้ว"
+        return 0
+    fi
+    json_ok "เพิ่มโดเมน ${added} รายการแล้ว (กด 'บันทึกและรีสตาร์ท Xray' เพื่อให้มีผล)"
+}
+
+cmd_del() {
+    local raw="$1" norm
+    norm=$(normalize_domain "$raw") || norm="$raw"
+    grep -vxF "$norm" "$WARP_DOMAINS" > /tmp/warp_dom_tmp.$$ 2>/dev/null || true
+    mv /tmp/warp_dom_tmp.$$ "$WARP_DOMAINS"
+    json_ok "ลบ ${norm} แล้ว (กด 'บันทึกและรีสตาร์ท Xray' เพื่อให้มีผล)"
+}
+
+cmd_preset() {
+    local ptype="$1"
+    local list
+    if [ "$ptype" = "youtube" ]; then
+        list="domain:youtube.com domain:googlevideo.com domain:ytimg.com domain:youtubei.googleapis.com"
+    else
+        list="full:www.cloudflare.com geosite:netflix domain:truemoney.com domain:7eleven.co.th domain:m-fixer.net domain:play-rfcdn.ais.th domain:ovp.ais.th domain:ovpplay.com"
+    fi
+    local added=0 item
+    for item in $list; do
+        if ! grep -qxF "$item" "$WARP_DOMAINS" 2>/dev/null; then
+            echo "$item" >> "$WARP_DOMAINS"
+            added=$((added + 1))
+        fi
+    done
+    json_ok "เพิ่มรายการแนะนำ ${added} โดเมนแล้ว (กด 'บันทึกและรีสตาร์ท Xray' เพื่อให้มีผล)"
+}
+
+cmd_status() {
+    load_conf
+    local installed=false registered=false xray_on=false ssh_on=false bquic=false cg_ok=true wp=false pending=false
+    [ -x "$WGCF_BIN" ] && installed=true
+    if [ -s "$WARP_JSON" ] && jq . "$WARP_JSON" >/dev/null 2>&1; then
+        registered=true
+        [ "$(jq -r '.warp_plus // false' "$WARP_JSON")" = "true" ] && wp=true
+    fi
+    [ "$XRAY_WARP" = "on" ] && xray_on=true
+    [ "$SSH_WARP" = "on" ] && ssh_on=true
+    [ "$BLOCK_QUIC" = "on" ] && bquic=true
+    if [ -f "$CGROUP_STATE" ]; then
+        [ "$(cat "$CGROUP_STATE" 2>/dev/null)" = "true" ] && cg_ok=true || cg_ok=false
+    else
+        local db_cg
+        db_cg=$(systemctl show -p ControlGroup --value dropbear 2>/dev/null | sed 's|^/||')
+        [ -z "$db_cg" ] && db_cg="system.slice/dropbear.service"
+        if ! iptables -t nat -C OUTPUT -m cgroup --path "$db_cg" -j RETURN 2>/dev/null; then
+            if iptables -t nat -N _WARP_CG_CHK 2>/dev/null; then
+                if ! iptables -t nat -A _WARP_CG_CHK -m cgroup --path "$db_cg" -j RETURN 2>/dev/null; then
+                    cg_ok=false
+                fi
+                iptables -t nat -F _WARP_CG_CHK 2>/dev/null
+                iptables -t nat -X _WARP_CG_CHK 2>/dev/null
+            fi
+        fi
+    fi
+
+    local cur_h app_h
+    cur_h=$(calc_hash)
+    app_h=$(cat "$WARP_HASH" 2>/dev/null)
+    if [ "$registered" = "true" ] && [ "$cur_h" != "$app_h" ]; then
+        pending=true
+    fi
+
+    local doms="[]"
+    if [ -s "$WARP_DOMAINS" ]; then
+        doms=$(grep -v '^[[:space:]]*$' "$WARP_DOMAINS" | jq -R . | jq -s .)
+    fi
+    local ssh_chain=false
+    iptables -t nat -L WARP_SSH -n >/dev/null 2>&1 && ssh_chain=true
+
+    jq -nc \
+        --argjson inst "$installed" \
+        --argjson reg "$registered" \
+        --argjson xon "$xray_on" \
+        --argjson son "$ssh_on" \
+        --argjson bq "$bquic" \
+        --argjson cg "$cg_ok" \
+        --arg ep "$WARP_ENDPOINT" \
+        --argjson wp "$wp" \
+        --argjson pend "$pending" \
+        --argjson sc "$ssh_chain" \
+        --argjson doms "$doms" \
+        '{installed:$inst, registered:$reg, xray_on:$xon, ssh_on:$son, block_quic:$bq, cgroup_ok:$cg, endpoint:$ep, warp_plus:$wp, pending:$pend, ssh_chain:$sc, domains:$doms}'
+}
+
+cmd_test() {
+    load_conf
+    local trace warp_ip warp_st colo vps_trace vps_ip ssh_chain=false ssh_pkts=0 listen_12345=false
+    if [ -s "$WARP_JSON" ]; then
+        trace=$(curl -fsSL -m 10 -x "socks5h://${TEST_USER}:${TEST_PASS}@127.0.0.1:40000" "https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null)
+    fi
+    warp_ip=$(echo "$trace" | awk -F= '$1=="ip"{print $2}')
+    warp_st=$(echo "$trace" | awk -F= '$1=="warp"{print $2}')
+    colo=$(echo "$trace" | awk -F= '$1=="colo"{print $2}')
+    [ -z "$warp_st" ] && warp_st="off"
+
+    vps_trace=$(curl -fsSL -m 5 "https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null)
+    vps_ip=$(echo "$vps_trace" | awk -F= '$1=="ip"{print $2}')
+    [ -z "$vps_ip" ] && vps_ip=$(curl -sS --max-time 3 ipv4.icanhazip.com 2>/dev/null)
+
+    if iptables -t nat -L WARP_SSH -n >/dev/null 2>&1; then
+        ssh_chain=true
+        ssh_pkts=$(iptables -t nat -L WARP_SSH -v -n -x 2>/dev/null | awk '/REDIRECT/{s+=$1} END{print s+0}')
+    fi
+    ss -ltn 2>/dev/null | grep -qE ':12345[[:space:]]' && listen_12345=true
+
+    jq -nc \
+        --arg wip "$warp_ip" \
+        --arg wst "$warp_st" \
+        --arg colo "$colo" \
+        --arg vip "$vps_ip" \
+        --argjson sc "$ssh_chain" \
+        --argjson sp "${ssh_pkts:-0}" \
+        --argjson l12 "$listen_12345" \
+        '{success:($wst=="on" or $wst=="plus"), warp_ip:$wip, warp:$wst, colo:$colo, vps_ip:$vip, ssh_chain:$sc, ssh_packets:$sp, listen_12345:$l12}'
+}
+
+cmd_uninstall() {
+    cmd_ipt_clear
+    set_conf_val XRAY_WARP off
+    set_conf_val SSH_WARP off
+    rm -f "$WARP_JSON" "$WARP_HASH"
+    cmd_apply >/dev/null 2>&1
+    json_ok "ปิดระบบ WARP Routing เรียบร้อยแล้ว (ไฟล์บัญชีเดิมยังคงเก็บไว้ใน /etc/xray/warp)"
+}
+
+case "$1" in
+    install)    cmd_install "$2" ;;
+    manual)     cmd_manual "$2" "$3" "$4" ;;
+    endpoint)
+        if ! echo "$2" | grep -qE '^[a-zA-Z0-9.-]+:[0-9]{2,5}$'; then
+            json_err "รูปแบบ Endpoint ไม่ถูกต้อง (ตัวอย่าง: 162.159.192.1:2408)"
+            exit 1
+        fi
+        set_conf_val WARP_ENDPOINT "$2"
+        json_ok "ตั้งค่า Endpoint เป็น $2 แล้ว (กด 'บันทึกและรีสตาร์ท Xray' เพื่อให้มีผล)"
+        ;;
+    apply)      cmd_apply "$2" ;;
+    on|off)
+        case "$2" in
+            xray) set_conf_val XRAY_WARP "$1" ;;
+            ssh)  set_conf_val SSH_WARP "$1" ;;
+            quic) set_conf_val BLOCK_QUIC "$1" ;;
+            *) json_err "ไม่รู้จักสวิตช์: $2"; exit 1 ;;
+        esac
+        json_ok "ปรับสวิตช์ $2 เป็น $1 แล้ว (กด 'บันทึกและรีสตาร์ท Xray' เพื่อให้มีผล)"
+        ;;
+    add)        cmd_add "$2" ;;
+    del)        cmd_del "$2" ;;
+    preset)     cmd_preset "$2" ;;
+    ipt-apply)  cmd_ipt_apply ;;
+    ipt-clear)  cmd_ipt_clear ;;
+    status)     cmd_status ;;
+    test)       cmd_test ;;
+    uninstall)  cmd_uninstall ;;
+    *)          echo "Usage: warp-route {install|manual|endpoint|apply|on|off|add|del|preset|ipt-apply|ipt-clear|status|test|uninstall}" ;;
+esac
+EOF
+chmod +x /usr/bin/warp-route
 
 cat <<EOF > /etc/sudoers.d/vpn-api
 www-data ALL=(ALL) NOPASSWD: /usr/bin/api-vpn, /usr/bin/panel-cmd, /usr/bin/rebuild-hysteria, /usr/sbin/useradd, /usr/sbin/usermod, /usr/sbin/groupdel, /usr/sbin/chpasswd, /usr/bin/chage, /usr/sbin/userdel, /usr/bin/killall, /usr/bin/passwd -u *, /usr/bin/passwd -l *, /bin/systemctl restart *, /bin/systemctl is-active *, /bin/systemctl daemon-reload
@@ -1048,10 +1789,13 @@ After=network.target nss-lookup.target
 
 [Service]
 User=root
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
+ExecStartPost=-/bin/bash -c 'sleep 1; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
+ExecStopPost=-/bin/bash -c '[ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-clear >/dev/null 2>&1 || true'
 Restart=on-failure
 RestartPreventExitStatus=23
 LimitNPROC=10000
@@ -1459,6 +2203,28 @@ export TZ="Asia/Bangkok"
 exec 200>/var/lock/tendang.lock
 flock -n 200 || exit 0
 
+# Watchdog ตรวจสอบกฎ WARP_SSH (ถ้า Xray ดับให้ปลดกฎทันที กันลูกค้า SSH เข้าเว็บไม่ได้)
+if [ -x /usr/bin/warp-route ]; then
+    if iptables -t nat -L WARP_SSH -n >/dev/null 2>&1; then
+        if ! systemctl is-active --quiet xray 2>/dev/null || ! ss -ltn 2>/dev/null | grep -qE ':12345[[:space:]]'; then
+            /usr/bin/warp-route ipt-clear >/dev/null 2>&1
+        fi
+    elif grep -q '^SSH_WARP=on' /etc/xray/warp.conf 2>/dev/null && [ -s /etc/xray/warp/warp.json ]; then
+        if systemctl is-active --quiet xray 2>/dev/null && ss -ltn 2>/dev/null | grep -qE ':12345[[:space:]]'; then
+            /usr/bin/warp-route ipt-apply >/dev/null 2>&1
+        fi
+    fi
+fi
+
+# จำกัดขนาด /var/log/xray/access.log ไม่ให้เกิน 100MB (เก็บ 2000 บรรทัดล่าสุดไว้สำหรับเมนู 19)
+if [ -f /var/log/xray/access.log ]; then
+    ACC_SIZE=$(stat -c%s /var/log/xray/access.log 2>/dev/null || echo 0)
+    if [ "$ACC_SIZE" -gt 104857600 ]; then
+        tail -n 2000 /var/log/xray/access.log > /tmp/xray_acc_tail.log 2>/dev/null && cat /tmp/xray_acc_tail.log > /var/log/xray/access.log 2>/dev/null
+        rm -f /tmp/xray_acc_tail.log
+    fi
+fi
+
 # ตรวจสอบและลบบัญชีทดลองรายชั่วโมง (hours=1) ที่หมดเวลาทุก 1 นาที (ใช้ Snapshot file)
 if [ -s /etc/xray/trial-exp.txt ]; then
     cp /etc/xray/trial-exp.txt /tmp/trial-exp-snap.txt
@@ -1558,6 +2324,9 @@ cp -f /etc/xray/xray-lock.txt "$BACKUP_DIR/xray/" 2>/dev/null
 cp -f /etc/xray/trial-exp.txt "$BACKUP_DIR/xray/" 2>/dev/null
 cp -f /etc/xray/ssh-pass.txt "$BACKUP_DIR/xray/" 2>/dev/null
 cp -f /etc/xray/limit-ssh "$BACKUP_DIR/xray/" 2>/dev/null
+cp -f /etc/xray/warp-domains.txt "$BACKUP_DIR/xray/" 2>/dev/null
+cp -f /etc/xray/warp.conf "$BACKUP_DIR/xray/" 2>/dev/null
+[ -d /etc/xray/warp ] && cp -rf /etc/xray/warp "$BACKUP_DIR/xray/" 2>/dev/null
 
 cp -f /etc/zivpn/config.json "$BACKUP_DIR/zivpn/" 2>/dev/null
 cp -f /etc/zivpn/zivpn-exp.txt "$BACKUP_DIR/zivpn/" 2>/dev/null
@@ -1740,6 +2509,15 @@ fi
 [ -f "$RESTORE_DIR/xray/trial-exp.txt" ] && cp -f "$RESTORE_DIR/xray/trial-exp.txt" /etc/xray/trial-exp.txt
 [ -f "$RESTORE_DIR/xray/ssh-pass.txt" ] && cp -f "$RESTORE_DIR/xray/ssh-pass.txt" /etc/xray/ssh-pass.txt
 [ -f "$RESTORE_DIR/xray/limit-ssh" ] && cp -f "$RESTORE_DIR/xray/limit-ssh" /etc/xray/limit-ssh
+[ -f "$RESTORE_DIR/xray/warp-domains.txt" ] && cp -f "$RESTORE_DIR/xray/warp-domains.txt" /etc/xray/warp-domains.txt
+[ -f "$RESTORE_DIR/xray/warp.conf" ] && cp -f "$RESTORE_DIR/xray/warp.conf" /etc/xray/warp.conf
+if [ -d "$RESTORE_DIR/xray/warp" ]; then
+    mkdir -p /etc/xray/warp
+    cp -rf "$RESTORE_DIR/xray/warp/." /etc/xray/warp/ 2>/dev/null
+fi
+if [ -x /usr/bin/warp-route ] && [ -s /etc/xray/warp/warp.json ]; then
+    /usr/bin/warp-route apply --no-restart >/dev/null 2>&1
+fi
 
 touch /var/log/xray/access.log /var/log/xray/error.log
 chmod -R 777 /var/log/xray
@@ -1747,6 +2525,30 @@ chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
 rm -f /usr/local/etc/xray/config.json
 ln -sf /etc/xray/config.json /usr/local/etc/xray/config.json 2>/dev/null
 rm -rf /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
+if [ -f /etc/systemd/system/xray.service ] && ! grep -q "warp-route ipt-apply" /etc/systemd/system/xray.service 2>/dev/null; then
+    cat << 'XSVC' > /etc/systemd/system/xray.service
+[Unit]
+Description=Xray Service
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
+ExecStartPost=-/bin/bash -c 'sleep 1; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
+ExecStopPost=-/bin/bash -c '[ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-clear >/dev/null 2>&1 || true'
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=10000
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+XSVC
+fi
 killall -9 xray 2>/dev/null || true
 
 mkdir -p /etc/zivpn
@@ -1916,9 +2718,10 @@ echo -e " [28] ดูข้อมูลเชื่อมต่อ Web Panel & A
 echo -e " [29] สำรองข้อมูลบัญชีทั้งหมด (Backup & Telegram Bot)"
 echo -e " [30] กู้คืนข้อมูลบัญชีทั้งหมด (Restore ย้ายเซิร์ฟเวอร์)"
 echo -e " [31] ทดสอบความเร็วอินเทอร์เน็ตเซิร์ฟเวอร์ (Speedtest by Ookla)"
+echo -e " [32] จัดการ WARP Split-Routing (แยกโดเมนออก WARP สำหรับ SSH + Xray)"
 echo -e " [0]  ออกจากเมนู"
 echo -e "${YELLOW}☉———————————————————————————————————————————————☉${NC}"
-read -rp "เลือกเมนู [0-31]: " opt
+read -rp "เลือกเมนู [0-32]: " opt
 
 case $opt in
     1)
@@ -2582,6 +3385,128 @@ CONF
         /usr/local/bin/speedtest --accept-license --accept-gdpr
         echo -e "${YELLOW}=================================================================${NC}"
         ;;
+    32)
+        while true; do
+            clear
+            WST=$(/usr/bin/warp-route status 2>/dev/null)
+            W_REG=$(echo "$WST" | jq -r '.registered')
+            W_XRAY=$(echo "$WST" | jq -r '.xray_on')
+            W_SSH=$(echo "$WST" | jq -r '.ssh_on')
+            W_QUIC=$(echo "$WST" | jq -r '.block_quic')
+            W_EP=$(echo "$WST" | jq -r '.endpoint')
+            W_PEND=$(echo "$WST" | jq -r '.pending')
+            W_CNT=$(echo "$WST" | jq -r '.domains | length')
+            echo -e "${YELLOW}========== จัดการ WARP Split-Routing (SSH + Xray) ==========${NC}"
+            echo -e " สถานะบัญชี WARP   : $([ "$W_REG" = "true" ] && echo -e "${GREEN}ลงทะเบียนแล้ว${NC}" || echo -e "${RED}ยังไม่ลงทะเบียน${NC}")"
+            echo -e " ใช้กับ Xray       : $([ "$W_XRAY" = "true" ] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}") | ใช้กับ SSH : $([ "$W_SSH" = "true" ] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}")"
+            echo -e " บล็อก QUIC (SSH)  : $([ "$W_QUIC" = "true" ] && echo -e "${GREEN}ON${NC}" || echo -e "${YELLOW}OFF${NC}") | Endpoint : ${CYAN}${W_EP}${NC}"
+            echo -e " จำนวนโดเมนในรายการ : ${CYAN}${W_CNT} รายการ${NC} $([ "$W_PEND" = "true" ] && echo -e "${YELLOW}(ยังไม่บันทึก! กด 10)${NC}" || echo "")"
+            echo -e "${YELLOW}------------------------------------------------------------${NC}"
+            echo -e " [1]  ลงทะเบียน WARP อัตโนมัติ (wgcf)"
+            echo -e " [2]  ทดสอบการเชื่อมต่อและเช็ก IP ของ WARP"
+            echo -e " [3]  เปิด / ปิด การใช้งานกับ Xray (Vmess/Vless)"
+            echo -e " [4]  เปิด / ปิด การใช้งานกับ SSH (OpenSSH/Dropbear)"
+            echo -e " [5]  เปิด / ปิด การบล็อก QUIC (UDP 443) สำหรับ SSH"
+            echo -e " [6]  เพิ่มโดเมน (เช่น youtube.com, geosite:netflix)"
+            echo -e " [7]  ลบโดเมนออกจากรายการ"
+            echo -e " [8]  ดูรายการโดเมนทั้งหมด"
+            echo -e " [9]  เพิ่มรายการแนะนำ (TrueMoney / 7-Eleven / AIS / Netflix / YouTube)"
+            echo -e " [10] บันทึกและรีสตาร์ท Xray (Apply)"
+            echo -e " [11] ใส่ WARP+ License Key"
+            echo -e " [12] ใส่คีย์ WireGuard เอง (โหมด Manual กรณีติด 429)"
+            echo -e " [13] เปลี่ยน WARP Endpoint (2408 / 500 / 1701 / 4500)"
+            echo -e " [14] ปิดระบบ WARP (Uninstall)"
+            echo -e " [0]  กลับสู่เมนูหลัก"
+            echo -e "${YELLOW}============================================================${NC}"
+            read -rp "เลือกทำรายการ [0-14]: " wopt
+            case "$wopt" in
+                1)
+                    echo -e "${CYAN}กำลังติดตั้งและลงทะเบียน WARP... กรุณารอสักครู่${NC}"
+                    /usr/bin/warp-route install | jq -r '.msg'
+                    read -rp "กด Enter เพื่อดำเนินการต่อ..." _
+                    ;;
+                2)
+                    echo -e "${CYAN}กำลังทดสอบการเชื่อมต่อผ่าน WARP...${NC}"
+                    WT=$(/usr/bin/warp-route test)
+                    echo -e " WARP Status  : $(echo "$WT" | jq -r '.warp')"
+                    echo -e " WARP IP      : $(echo "$WT" | jq -r '.warp_ip') (Colo: $(echo "$WT" | jq -r '.colo'))"
+                    echo -e " VPS IP       : $(echo "$WT" | jq -r '.vps_ip')"
+                    echo -e " SSH Redirect : $(echo "$WT" | jq -r '.ssh_chain') (Packets: $(echo "$WT" | jq -r '.ssh_packets'))"
+                    read -rp "กด Enter เพื่อดำเนินการต่อ..." _
+                    ;;
+                3)
+                    [ "$W_XRAY" = "true" ] && /usr/bin/warp-route off xray | jq -r '.msg' || /usr/bin/warp-route on xray | jq -r '.msg'
+                    sleep 1
+                    ;;
+                4)
+                    [ "$W_SSH" = "true" ] && /usr/bin/warp-route off ssh | jq -r '.msg' || /usr/bin/warp-route on ssh | jq -r '.msg'
+                    sleep 1
+                    ;;
+                5)
+                    [ "$W_QUIC" = "true" ] && /usr/bin/warp-route off quic | jq -r '.msg' || /usr/bin/warp-route on quic | jq -r '.msg'
+                    sleep 1
+                    ;;
+                6)
+                    read -rp "กรอกโดเมนที่ต้องการ (คั่นด้วยเว้นวรรคได้ เช่น youtube.com netflix.com): " wdom
+                    [ -n "$wdom" ] && /usr/bin/warp-route add "$wdom" | jq -r '.msg'
+                    sleep 1
+                    ;;
+                7)
+                    nl -w2 -s'. ' /etc/xray/warp-domains.txt 2>/dev/null
+                    read -rp "พิมพ์ชื่อโดเมนที่ต้องการลบ: " wdel
+                    [ -n "$wdel" ] && /usr/bin/warp-route del "$wdel" | jq -r '.msg'
+                    sleep 1
+                    ;;
+                8)
+                    echo -e "${CYAN}--- รายการโดเมนที่วิ่งผ่าน WARP ---${NC}"
+                    nl -w2 -s'. ' /etc/xray/warp-domains.txt 2>/dev/null
+                    read -rp "กด Enter เพื่อกลับ..." _
+                    ;;
+                9)
+                    echo " [1] ชุดแอปไทย + Netflix (TrueMoney, 7-Eleven, AIS, Netflix, Cloudflare Trace)"
+                    echo " [2] ชุด YouTube (youtube.com, googlevideo.com, ytimg.com)"
+                    read -rp "เลือกชุด [1-2]: " pchoice
+                    if [ "$pchoice" = "2" ]; then
+                        /usr/bin/warp-route preset youtube | jq -r '.msg'
+                    else
+                        /usr/bin/warp-route preset thai | jq -r '.msg'
+                    fi
+                    sleep 1
+                    ;;
+                10)
+                    echo -e "${CYAN}กำลังตรวจสอบคอนฟิกและรีสตาร์ท Xray...${NC}"
+                    /usr/bin/warp-route apply | jq -r '.msg'
+                    read -rp "กด Enter เพื่อดำเนินการต่อ..." _
+                    ;;
+                11)
+                    read -rp "กรอก WARP+ License Key: " wkey
+                    [ -n "$wkey" ] && /usr/bin/warp-route install "$wkey" | jq -r '.msg'
+                    read -rp "กด Enter เพื่อดำเนินการต่อ..." _
+                    ;;
+                12)
+                    read -rp "Private Key (Base64): " mpk
+                    read -rp "IPv6 Address (เช่น 2606:4700:110:...::2/128): " mv6
+                    read -rp "Reserved (เช่น 12,34,56 หรือ Enter ใช้ 0,0,0): " mres
+                    /usr/bin/warp-route manual "$mpk" "$mv6" "$mres" | jq -r '.msg'
+                    read -rp "กด Enter เพื่อดำเนินการต่อ..." _
+                    ;;
+                13)
+                    echo " ตัวอย่าง: 162.159.192.1:2408 | 162.159.192.1:500 | 162.159.192.1:1701 | 162.159.192.1:4500"
+                    read -rp "กรอก Endpoint ใหม่: " wep
+                    [ -n "$wep" ] && /usr/bin/warp-route endpoint "$wep" | jq -r '.msg'
+                    sleep 1
+                    ;;
+                14)
+                    read -rp "ยืนยันปิดระบบ WARP Routing? (y/n): " wy
+                    if [ "$wy" = "y" ] || [ "$wy" = "Y" ]; then
+                        /usr/bin/warp-route uninstall | jq -r '.msg'
+                    fi
+                    read -rp "กด Enter เพื่อดำเนินการต่อ..." _
+                    ;;
+                0) break ;;
+            esac
+        done
+        ;;
     0)
         exit 0
         ;;
@@ -2591,7 +3516,7 @@ CONF
 esac
 EOF
 # ปลดล็อกสิทธิ์คำสั่งเมนูและสคริปต์ระบบทั้งหมด (ใช้ c ตัวพิมพ์เล็ก)
-chmod +x /usr/bin/menu /usr/bin/running /usr/bin/xp /usr/bin/tendang /usr/bin/clear-log /usr/bin/backup-vpn /usr/bin/restore-vpn /usr/bin/api-vpn /usr/bin/panel-cmd /usr/bin/hys-auth /usr/bin/rebuild-hysteria
+chmod +x /usr/bin/menu /usr/bin/running /usr/bin/xp /usr/bin/tendang /usr/bin/clear-log /usr/bin/backup-vpn /usr/bin/restore-vpn /usr/bin/api-vpn /usr/bin/panel-cmd /usr/bin/hys-auth /usr/bin/rebuild-hysteria /usr/bin/warp-route
 
 # ------------------------------------------------------------------------------
 #  FIX 1: ตั้งค่า Iptables NAT ด้วย Chain เฉพาะ (VPN_UDP) ปลอดภัยไม่กระทบ Rule อื่น
@@ -2730,6 +3655,35 @@ if ! grep -q "stream_mux.conf" /etc/nginx/nginx.conf 2>/dev/null; then
 fi
 sed -i 's/listen 443 ssl http2 reuseport;/listen 127.0.0.1:8443 ssl http2;/g' /etc/nginx/conf.d/xray.conf 2>/dev/null
 sed -i 's/listen \[::\]:443 ssl http2 reuseport;//g' /etc/nginx/conf.d/xray.conf 2>/dev/null
+
+# คงค่า Hook ของ WARP บน xray.service และ Apply คอนฟิก WARP กลับคืนหลังอัปเดตเมนู 27
+if [ -f /etc/systemd/system/xray.service ] && ! grep -q "warp-route ipt-apply" /etc/systemd/system/xray.service 2>/dev/null; then
+    cat << 'XSVC2' > /etc/systemd/system/xray.service
+[Unit]
+Description=Xray Service
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
+ExecStartPost=-/bin/bash -c 'sleep 1; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
+ExecStopPost=-/bin/bash -c '[ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-clear >/dev/null 2>&1 || true'
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=10000
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+XSVC2
+fi
+if [ -x /usr/bin/warp-route ] && [ -s /etc/xray/warp/warp.json ]; then
+    /usr/bin/warp-route apply --no-restart >/dev/null 2>&1 || true
+fi
 
 systemctl daemon-reload
 systemctl enable stunnel4 xray nginx >/dev/null 2>&1

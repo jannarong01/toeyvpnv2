@@ -114,6 +114,61 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
         echo shell_exec("sudo /usr/bin/panel-cmd run_speedtest");
     } elseif ($act === 'get_speedtest') {
         echo shell_exec("sudo /usr/bin/panel-cmd get_speedtest");
+    } elseif ($act === 'warp_status') {
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_status");
+    } elseif ($act === 'warp_install') {
+        @set_time_limit(120);
+        $k = escapeshellarg(preg_replace('/[^a-zA-Z0-9_-]/', '', $_POST['license_key'] ?? ''));
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_install $k");
+    } elseif ($act === 'warp_manual') {
+        @set_time_limit(120);
+        $pk = escapeshellarg(preg_replace('/[^a-zA-Z0-9+\/=]/', '', $_POST['private_key'] ?? ''));
+        $v6 = escapeshellarg(preg_replace('/[^0-9a-fA-F:\/]/', '', $_POST['ipv6'] ?? ''));
+        $rv = escapeshellarg(preg_replace('/[^0-9,]/', '', $_POST['reserved'] ?? ''));
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_manual $pk $v6 $rv");
+    } elseif ($act === 'warp_endpoint') {
+        $ep = trim($_POST['endpoint'] ?? '');
+        if (!preg_match('/^[a-zA-Z0-9.-]+:[0-9]{2,5}$/', $ep)) {
+            echo json_encode(['success' => false, 'msg' => 'รูปแบบ Endpoint ไม่ถูกต้อง']);
+        } else {
+            $eep = escapeshellarg($ep);
+            echo shell_exec("sudo /usr/bin/panel-cmd warp_endpoint $eep");
+        }
+    } elseif ($act === 'warp_toggle') {
+        $t = $_POST['target'] ?? '';
+        $s = ($_POST['state'] ?? '') === 'on' ? 'on' : 'off';
+        if (!in_array($t, ['xray', 'ssh', 'quic'], true)) {
+            echo json_encode(['success' => false, 'msg' => 'Invalid target']);
+        } else {
+            echo shell_exec("sudo /usr/bin/panel-cmd warp_toggle " . escapeshellarg($t) . " " . escapeshellarg($s));
+        }
+    } elseif ($act === 'warp_add') {
+        $d = trim($_POST['domain'] ?? '');
+        if (empty($d) || stripos($d, 'regexp:') !== false) {
+            echo json_encode(['success' => false, 'msg' => 'รูปแบบโดเมนไม่ถูกต้อง (ห้ามใช้ regexp:)']);
+        } else {
+            $ed = escapeshellarg(preg_replace('/[^a-zA-Z0-9.:_\/@!,\s-]/', '', $d));
+            echo shell_exec("sudo /usr/bin/panel-cmd warp_add $ed");
+        }
+    } elseif ($act === 'warp_del') {
+        $d = trim($_POST['domain'] ?? '');
+        if (!preg_match('/^((geosite|domain|full|keyword):)?[a-zA-Z0-9._@!-]+$/', $d)) {
+            echo json_encode(['success' => false, 'msg' => 'รูปแบบโดเมนไม่ถูกต้อง']);
+        } else {
+            echo shell_exec("sudo /usr/bin/panel-cmd warp_del " . escapeshellarg($d));
+        }
+    } elseif ($act === 'warp_preset') {
+        $pt = ($_POST['type'] ?? '') === 'youtube' ? 'youtube' : 'thai';
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_preset " . escapeshellarg($pt));
+    } elseif ($act === 'warp_apply') {
+        @set_time_limit(120);
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_apply");
+    } elseif ($act === 'warp_test') {
+        @set_time_limit(60);
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_test");
+    } elseif ($act === 'warp_uninstall') {
+        @set_time_limit(60);
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_uninstall");
     }
     exit;
 }
@@ -301,7 +356,7 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
             <div id="svc-grid" class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs"></div>
         </div>
 
-        <div class="glass-card p-1.5 rounded-2xl grid grid-cols-3 gap-1.5">
+        <div class="glass-card p-1.5 rounded-2xl grid grid-cols-2 sm:grid-cols-4 gap-1.5">
             <button onclick="switchTab('ssh')" id="tab-btn-ssh" class="flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl font-semibold text-xs sm:text-sm bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 shadow-md transition">
                 <i class="ri-shield-user-line text-base"></i>
                 <span class="truncate">All-in-One</span>
@@ -309,6 +364,10 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
             <button onclick="switchTab('xray')" id="tab-btn-xray" class="flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl font-medium text-xs sm:text-sm text-slate-300 hover:bg-slate-800/60 transition">
                 <i class="ri-radar-line text-base"></i>
                 <span class="truncate">Xray Core</span>
+            </button>
+            <button onclick="switchTab('warp')" id="tab-btn-warp" class="flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl font-medium text-xs sm:text-sm text-slate-300 hover:bg-slate-800/60 transition">
+                <i class="ri-cloud-windy-line text-base"></i>
+                <span class="truncate">WARP Routing</span>
             </button>
             <button onclick="switchTab('speed')" id="tab-btn-speed" class="flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl font-medium text-xs sm:text-sm text-slate-300 hover:bg-slate-800/60 transition">
                 <i class="ri-speed-up-line text-base"></i>
@@ -426,6 +485,177 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                         </thead>
                         <tbody id="xray-tbody" class="divide-y divide-white/5"></tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-warp" class="hidden space-y-4">
+            <!-- Pending Apply Banner -->
+            <div id="warp-pending-banner" class="hidden bg-amber-500/15 border border-amber-500/40 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-2.5 text-amber-200 text-xs sm:text-sm">
+                    <i class="ri-error-warning-fill text-amber-400 text-xl shrink-0"></i>
+                    <span>มีการเปลี่ยนแปลงการตั้งค่าหรือรายการโดเมนที่ยังไม่บันทึก กรุณากด <b>บันทึกและรีสตาร์ท Xray</b> เพื่อให้มีผล</span>
+                </div>
+                <button onclick="warpApply()" class="bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs shadow-md transition flex items-center gap-1.5">
+                    <i class="ri-save-3-line text-sm"></i> บันทึกและรีสตาร์ท Xray
+                </button>
+            </div>
+
+            <!-- Card 1: WARP Status & Registration -->
+            <div class="glass-card p-5 rounded-2xl space-y-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2.5">
+                        <div class="w-9 h-9 rounded-xl bg-orange-500/15 text-orange-400 flex items-center justify-center">
+                            <i class="ri-cloud-windy-fill text-xl"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-sm font-bold text-white">Cloudflare WARP Split-Routing (SSH + Xray)</h3>
+                            <p class="text-[11px] text-slate-400">ส่งเฉพาะเว็บที่ต้องการออกผ่าน IP Cloudflare WARP ส่วนเว็บอื่นวิ่งตรง IP VPS เต็มสปีด</p>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button onclick="warpTest()" id="btn-warp-test" class="px-3.5 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700/90 border border-white/10 text-xs font-medium text-cyan-300 transition flex items-center gap-1.5">
+                            <i class="ri-radar-line"></i> ทดสอบ IP WARP
+                        </button>
+                        <button onclick="warpApply()" id="btn-warp-apply" class="bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs shadow-lg shadow-cyan-500/15 transition flex items-center gap-1.5">
+                            <i class="ri-restart-line text-sm"></i> บันทึกและรีสตาร์ท Xray
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Status Grid -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+                    <div class="bg-slate-950/70 border border-white/5 rounded-xl p-3">
+                        <div class="text-[11px] text-slate-400">สถานะบัญชี WARP</div>
+                        <div id="warp-stat-reg" class="font-bold text-slate-200 mt-1">กำลังตรวจสอบ...</div>
+                    </div>
+                    <div class="bg-slate-950/70 border border-white/5 rounded-xl p-3">
+                        <div class="text-[11px] text-slate-400">WARP IP / Colo</div>
+                        <div id="warp-stat-ip" class="font-mono font-bold text-cyan-300 mt-1 truncate">กดทดสอบเพื่อดู IP</div>
+                    </div>
+                    <div class="bg-slate-950/70 border border-white/5 rounded-xl p-3">
+                        <div class="text-[11px] text-slate-400">SSH Redirect (iptables)</div>
+                        <div id="warp-stat-chain" class="font-bold text-slate-200 mt-1">-</div>
+                    </div>
+                    <div class="bg-slate-950/70 border border-white/5 rounded-xl p-3">
+                        <div class="text-[11px] text-slate-400">WARP Endpoint</div>
+                        <div id="warp-stat-ep" class="font-mono font-semibold text-slate-200 mt-1 truncate">162.159.192.1:2408</div>
+                    </div>
+                </div>
+
+                <!-- Register / License / Manual / Endpoint Controls -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 pt-1">
+                    <div class="flex gap-2">
+                        <input type="text" id="warp-license-key" placeholder="WARP+ License Key (เว้นว่าง = ใช้ WARP ฟรี)" class="flex-1 px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-700/80 text-xs text-white focus:outline-none focus:border-cyan-400">
+                        <button onclick="warpInstall()" id="btn-warp-install" class="bg-gradient-to-r from-orange-400 to-amber-500 hover:from-orange-300 hover:to-amber-400 text-slate-950 font-bold px-3.5 py-2 rounded-xl text-xs whitespace-nowrap transition flex items-center gap-1">
+                            <i class="ri-download-cloud-2-line"></i> ลงทะเบียน WARP
+                        </button>
+                    </div>
+                    <div class="flex gap-2">
+                        <select id="warp-endpoint-select" class="flex-1 px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-700/80 text-xs text-slate-200 font-mono focus:outline-none focus:border-cyan-400">
+                            <option value="162.159.192.1:2408">162.159.192.1:2408 (มาตรฐาน)</option>
+                            <option value="162.159.192.1:500">162.159.192.1:500</option>
+                            <option value="162.159.192.1:1701">162.159.192.1:1701</option>
+                            <option value="162.159.192.1:4500">162.159.192.1:4500</option>
+                            <option value="162.159.193.1:2408">162.159.193.1:2408</option>
+                        </select>
+                        <button onclick="warpSaveEndpoint()" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium whitespace-nowrap transition">ตั้ง Endpoint</button>
+                        <button onclick="toggleWarpManual()" class="px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs whitespace-nowrap transition" title="ใส่คีย์ WireGuard เองกรณีติด 429">
+                            <i class="ri-key-2-line"></i> Manual
+                        </button>
+                        <button onclick="warpUninstall()" class="px-3 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs whitespace-nowrap transition" title="ปิดระบบ WARP">
+                            <i class="ri-shut-down-line"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Collapsible Manual WireGuard Key Box -->
+                <div id="warp-manual-box" class="hidden bg-slate-950/80 border border-white/10 rounded-xl p-3.5 space-y-2.5">
+                    <div class="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+                        <i class="ri-key-2-fill"></i> ใส่คีย์ WireGuard WARP เอง (ใช้เมื่อลงทะเบียนอัตโนมัติติด Rate Limit 429)
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <input type="text" id="warp-manual-pk" placeholder="Private Key (Base64)" class="px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-cyan-400">
+                        <input type="text" id="warp-manual-v6" placeholder="IPv6 (เช่น 2606:4700:110:...::2/128)" class="px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-cyan-400">
+                        <input type="text" id="warp-manual-res" placeholder="Reserved (เช่น 12,34,56 หรือเว้นว่าง)" class="px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-cyan-400">
+                    </div>
+                    <button onclick="warpSaveManual()" class="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 px-4 py-1.5 rounded-lg text-xs font-semibold transition">
+                        บันทึกคีย์ Manual และใช้งาน
+                    </button>
+                </div>
+            </div>
+
+            <!-- Card 2: Split-Routing Toggles -->
+            <div class="glass-card p-5 rounded-2xl space-y-3">
+                <h4 class="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                    <i class="ri-toggle-line text-cyan-400"></i> เปิด / ปิด การแยกเส้นทางออก WARP
+                </h4>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div class="bg-slate-950/70 border border-white/5 rounded-xl p-3.5 flex items-center justify-between gap-3">
+                        <div>
+                            <div class="text-xs font-semibold text-white">ใช้กับ Xray (Vmess / Vless)</div>
+                            <div class="text-[11px] text-slate-400">แยกโดเมนออก WARP สำหรับบัญชี Xray</div>
+                        </div>
+                        <button onclick="warpToggle('xray')" id="warp-btn-xray" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 border border-white/10 transition">OFF</button>
+                    </div>
+                    <div class="bg-slate-950/70 border border-white/5 rounded-xl p-3.5 flex items-center justify-between gap-3">
+                        <div>
+                            <div class="text-xs font-semibold text-white">ใช้กับ SSH (OpenSSH / Dropbear)</div>
+                            <div class="text-[11px] text-slate-400">ลูกค้า SSH ไม่ต้องตั้งค่าแอปเพิ่ม</div>
+                        </div>
+                        <button onclick="warpToggle('ssh')" id="warp-btn-ssh" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 border border-white/10 transition">OFF</button>
+                    </div>
+                    <div class="bg-slate-950/70 border border-white/5 rounded-xl p-3.5 flex items-center justify-between gap-3">
+                        <div>
+                            <div class="text-xs font-semibold text-white">บล็อก QUIC (UDP 443) สำหรับ SSH</div>
+                            <div class="text-[11px] text-slate-400">แนะนำ: กัน YouTube/Google หลุดผ่าน UDP</div>
+                        </div>
+                        <button onclick="warpToggle('quic')" id="warp-btn-quic" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition">ON</button>
+                    </div>
+                </div>
+                <div id="warp-cgroup-warn" class="hidden text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-xl p-3 flex items-start gap-2">
+                    <i class="ri-alert-line text-sm shrink-0 mt-0.5"></i>
+                    <span>เซิร์ฟเวอร์นี้ไม่รองรับ <code>iptables cgroup</code> (มักพบใน Ubuntu 20.04) — ลูกค้า <b>OpenSSH (พอร์ต 22 / WS 80 / WS TLS 443 / Stunnel 777)</b> จะวิ่งผ่าน WARP ได้ตามปกติ แต่ Dropbear (109/143/444/443-SSL) จะยังไม่ผ่าน WARP</span>
+                </div>
+            </div>
+
+            <!-- Card 3: Domain List Manager (3x-ui style chips) -->
+            <div class="glass-card p-5 rounded-2xl space-y-4">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                        <h4 class="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                            <i class="ri-global-line text-cyan-400"></i> รายชื่อโดเมนที่ให้วิ่งผ่าน WARP
+                            <span id="warp-domain-count" class="text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 font-semibold">0 รายการ</span>
+                        </h4>
+                        <p class="text-[11px] text-slate-400 mt-0.5">พิมพ์ชื่อเว็บได้เลย เช่น <code>youtube.com</code>, <code>netflix.com</code>, <code>apis.truemoney.com</code> หรือใช้ <code>geosite:netflix</code>, <code>full:www.cloudflare.com</code> (เพิ่มพร้อมกันหลายโดเมนคั่นด้วย , หรือเว้นวรรคได้)</p>
+                    </div>
+                    <div class="flex flex-wrap gap-1.5">
+                        <button onclick="warpPreset('thai')" class="text-xs bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 px-3 py-1.5 rounded-xl transition flex items-center gap-1">
+                            <i class="ri-magic-line"></i> + ชุดแอปไทย &amp; Netflix
+                        </button>
+                        <button onclick="warpPreset('youtube')" class="text-xs bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 px-3 py-1.5 rounded-xl transition flex items-center gap-1">
+                            <i class="ri-youtube-line"></i> + ชุด YouTube
+                        </button>
+                    </div>
+                </div>
+
+                <form onsubmit="warpAddDomain(event)" class="flex gap-2">
+                    <div class="relative flex-1">
+                        <i class="ri-links-line absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                        <input type="text" id="warp-domain-input" required placeholder="พิมพ์โดเมนที่ต้องการให้วิ่งผ่าน WARP (เช่น youtube.com หรือ geosite:netflix)" class="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950/90 border border-slate-700/80 text-xs sm:text-sm text-white focus:outline-none focus:border-cyan-400">
+                    </div>
+                    <button type="submit" class="bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl text-xs sm:text-sm whitespace-nowrap transition flex items-center gap-1">
+                        <i class="ri-add-circle-fill text-base"></i> เพิ่มโดเมน
+                    </button>
+                </form>
+
+                <div id="warp-domains-box" class="bg-slate-950/70 border border-white/10 rounded-xl p-3.5 min-h-[90px] flex flex-wrap gap-2 content-start">
+                    <span class="text-xs text-slate-500">กำลังโหลดรายการโดเมน...</span>
+                </div>
+
+                <div class="text-[11px] text-slate-400 flex items-center gap-1.5">
+                    <i class="ri-information-line text-cyan-400"></i>
+                    <span>วิธีตรวจสอบฝั่งลูกค้า: เพิ่ม <code>full:www.cloudflare.com</code> แล้วกดบันทึก จากนั้นเปิด <code class="text-cyan-300">https://www.cloudflare.com/cdn-cgi/trace</code> ผ่าน SSH หรือ Xray จะต้องแสดง <b>warp=on</b></span>
                 </div>
             </div>
         </div>
@@ -649,13 +879,14 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
         }
 
         function switchTab(tab) {
-            ['ssh', 'xray', 'speed'].forEach(t => {
+            ['ssh', 'xray', 'warp', 'speed'].forEach(t => {
                 document.getElementById('tab-' + t).classList.add('hidden');
                 document.getElementById('tab-btn-' + t).className = 'flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl font-medium text-xs sm:text-sm text-slate-300 hover:bg-slate-800/60 transition';
             });
             document.getElementById('tab-' + tab).classList.remove('hidden');
             document.getElementById('tab-btn-' + tab).className = 'flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl font-semibold text-xs sm:text-sm bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 shadow-md transition';
             if (tab === 'xray') loadXrayUsers();
+            if (tab === 'warp') loadWarp();
             if (tab === 'speed') pollSpeedtest();
         }
 
@@ -1166,6 +1397,243 @@ ${hysHop}`;
                 btn.innerHTML = '<i class="ri-play-circle-fill text-base"></i> เริ่มวัดความเร็ว';
                 btn.disabled = false;
             }
+        }
+
+        let warpState = { xray_on: false, ssh_on: false, block_quic: true, registered: false, domains: [] };
+
+        function escapeHtml(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function setToggleBtn(id, isOn) {
+            const btn = document.getElementById(id);
+            if (!btn) return;
+            if (isOn) {
+                btn.textContent = 'ON';
+                btn.className = 'px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm transition';
+            } else {
+                btn.textContent = 'OFF';
+                btn.className = 'px-3.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 border border-white/10 transition';
+            }
+        }
+
+        async function loadWarp() {
+            try {
+                const res = await fetch('?ajax=warp_status');
+                const d = await res.json();
+                warpState = d;
+
+                const regEl = document.getElementById('warp-stat-reg');
+                if (d.registered) {
+                    regEl.innerHTML = d.warp_plus
+                        ? '<span class="text-emerald-400">● ลงทะเบียนแล้ว (WARP+)</span>'
+                        : '<span class="text-emerald-400">● ลงทะเบียนแล้ว (Free)</span>';
+                } else {
+                    regEl.innerHTML = '<span class="text-rose-400">● ยังไม่ลงทะเบียน</span>';
+                }
+
+                const chainEl = document.getElementById('warp-stat-chain');
+                chainEl.innerHTML = d.ssh_chain
+                    ? '<span class="text-emerald-400">● ทำงานอยู่ (Active)</span>'
+                    : '<span class="text-slate-400">● ปิดอยู่</span>';
+
+                document.getElementById('warp-stat-ep').textContent = d.endpoint || '162.159.192.1:2408';
+                const epSel = document.getElementById('warp-endpoint-select');
+                if (epSel && d.endpoint) {
+                    let found = false;
+                    for (const opt of epSel.options) {
+                        if (opt.value === d.endpoint) { found = true; break; }
+                    }
+                    if (!found) {
+                        const o = document.createElement('option');
+                        o.value = d.endpoint;
+                        o.textContent = d.endpoint;
+                        epSel.appendChild(o);
+                    }
+                    epSel.value = d.endpoint;
+                }
+
+                setToggleBtn('warp-btn-xray', !!d.xray_on);
+                setToggleBtn('warp-btn-ssh', !!d.ssh_on);
+                setToggleBtn('warp-btn-quic', !!d.block_quic);
+
+                document.getElementById('warp-cgroup-warn').classList.toggle('hidden', d.cgroup_ok !== false);
+                document.getElementById('warp-pending-banner').classList.toggle('hidden', !d.pending);
+
+                const domains = Array.isArray(d.domains) ? d.domains : [];
+                document.getElementById('warp-domain-count').textContent = `${domains.length} รายการ`;
+                const box = document.getElementById('warp-domains-box');
+                if (!domains.length) {
+                    box.innerHTML = '<span class="text-xs text-slate-500">ยังไม่มีโดเมนในรายการ — พิมพ์ชื่อเว็บด้านบน (เช่น youtube.com) หรือกดปุ่มชุดแนะนำได้เลย</span>';
+                } else {
+                    box.innerHTML = domains.map((dom, idx) => `
+                        <span class="inline-flex items-center gap-1.5 bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 px-3 py-1.5 rounded-full text-xs font-mono">
+                            <span>${escapeHtml(dom)}</span>
+                            <button type="button" onclick="warpDelDomain(${idx})" class="text-slate-400 hover:text-rose-400 transition ml-0.5" title="ลบโดเมนนี้">
+                                <i class="ri-close-line text-sm"></i>
+                            </button>
+                        </span>
+                    `).join('');
+                }
+            } catch (e) {
+                showToast('โหลดสถานะ WARP ไม่สำเร็จ');
+            }
+        }
+
+        async function warpInstall() {
+            const btn = document.getElementById('btn-warp-install');
+            const orig = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="ri-loader-4-line animate-spin"></i> กำลังลงทะเบียน...';
+            try {
+                const fd = new FormData();
+                fd.append('license_key', document.getElementById('warp-license-key').value.trim());
+                const res = await fetch('?ajax=warp_install', { method: 'POST', body: fd });
+                const r = await res.json();
+                showToast(r.msg || 'ดำเนินการเสร็จสิ้น');
+                await loadWarp();
+                if (r.success) warpTest();
+            } catch (e) {
+                showToast('ลงทะเบียน WARP ล้มเหลว กรุณาลองใหม่');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = orig;
+            }
+        }
+
+        function toggleWarpManual() {
+            document.getElementById('warp-manual-box').classList.toggle('hidden');
+        }
+
+        async function warpSaveManual() {
+            const fd = new FormData();
+            fd.append('private_key', document.getElementById('warp-manual-pk').value.trim());
+            fd.append('ipv6', document.getElementById('warp-manual-v6').value.trim());
+            fd.append('reserved', document.getElementById('warp-manual-res').value.trim());
+            const res = await fetch('?ajax=warp_manual', { method: 'POST', body: fd });
+            const r = await res.json();
+            showToast(r.msg || 'ดำเนินการเสร็จสิ้น');
+            if (r.success) {
+                document.getElementById('warp-manual-box').classList.add('hidden');
+                await loadWarp();
+                warpTest();
+            }
+        }
+
+        async function warpSaveEndpoint() {
+            const fd = new FormData();
+            fd.append('endpoint', document.getElementById('warp-endpoint-select').value);
+            const res = await fetch('?ajax=warp_endpoint', { method: 'POST', body: fd });
+            const r = await res.json();
+            showToast(r.msg || 'บันทึก Endpoint แล้ว');
+            loadWarp();
+        }
+
+        async function warpToggle(target) {
+            if (!warpState.registered && target !== 'quic') {
+                showToast('กรุณากดปุ่ม "ลงทะเบียน WARP" ก่อนเปิดใช้งาน');
+                return;
+            }
+            const cur = target === 'xray' ? warpState.xray_on : (target === 'ssh' ? warpState.ssh_on : warpState.block_quic);
+            const fd = new FormData();
+            fd.append('target', target);
+            fd.append('state', cur ? 'off' : 'on');
+            const res = await fetch('?ajax=warp_toggle', { method: 'POST', body: fd });
+            const r = await res.json();
+            showToast(r.msg);
+            loadWarp();
+        }
+
+        async function warpAddDomain(e) {
+            e.preventDefault();
+            const inp = document.getElementById('warp-domain-input');
+            const val = inp.value.trim();
+            if (!val) return;
+            const fd = new FormData();
+            fd.append('domain', val);
+            const res = await fetch('?ajax=warp_add', { method: 'POST', body: fd });
+            const r = await res.json();
+            showToast(r.msg);
+            if (r.success) {
+                inp.value = '';
+                loadWarp();
+            }
+        }
+
+        async function warpDelDomain(idx) {
+            const dom = (warpState.domains || [])[idx];
+            if (!dom) return;
+            const fd = new FormData();
+            fd.append('domain', dom);
+            const res = await fetch('?ajax=warp_del', { method: 'POST', body: fd });
+            const r = await res.json();
+            showToast(r.msg);
+            loadWarp();
+        }
+
+        async function warpPreset(type) {
+            const fd = new FormData();
+            fd.append('type', type);
+            const res = await fetch('?ajax=warp_preset', { method: 'POST', body: fd });
+            const r = await res.json();
+            showToast(r.msg);
+            loadWarp();
+        }
+
+        async function warpApply() {
+            const btn = document.getElementById('btn-warp-apply');
+            const orig = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="ri-loader-4-line animate-spin text-sm"></i> กำลังบันทึกและรีสตาร์ท...';
+            try {
+                const res = await fetch('?ajax=warp_apply', { method: 'POST' });
+                const r = await res.json();
+                showToast(r.msg || 'บันทึกเรียบร้อย');
+                await loadWarp();
+                loadStats();
+            } catch (e) {
+                showToast('เกิดข้อผิดพลาดระหว่างรีสตาร์ท Xray');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = orig;
+            }
+        }
+
+        async function warpTest() {
+            const btn = document.getElementById('btn-warp-test');
+            const orig = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="ri-loader-4-line animate-spin"></i> กำลังทดสอบ...';
+            try {
+                const res = await fetch('?ajax=warp_test');
+                const r = await res.json();
+                const ipEl = document.getElementById('warp-stat-ip');
+                if (r.warp === 'on' || r.warp === 'plus') {
+                    ipEl.innerHTML = `<span class="text-emerald-400">${escapeHtml(r.warp_ip)} (${escapeHtml(r.colo || 'CF')})</span>`;
+                    showToast(`WARP เชื่อมต่อสำเร็จ! IP: ${r.warp_ip} (${r.warp.toUpperCase()})`);
+                } else {
+                    ipEl.innerHTML = '<span class="text-rose-400">เชื่อมต่อไม่สำเร็จ (OFF)</span>';
+                    showToast('เชื่อมต่อ WARP ไม่สำเร็จ ลองเปลี่ยน Endpoint หรือกดบันทึกและรีสตาร์ท Xray');
+                }
+                const chainEl = document.getElementById('warp-stat-chain');
+                chainEl.innerHTML = r.ssh_chain
+                    ? `<span class="text-emerald-400">● Active (${r.ssh_packets} pkts)</span>`
+                    : '<span class="text-slate-400">● ปิดอยู่</span>';
+            } catch (e) {
+                showToast('ทดสอบ WARP ไม่สำเร็จ');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = orig;
+            }
+        }
+
+        async function warpUninstall() {
+            if (!confirm('ยืนยันปิดระบบ WARP Split-Routing และคืนค่าคอนฟิก Xray เป็นปกติ?')) return;
+            const res = await fetch('?ajax=warp_uninstall', { method: 'POST' });
+            const r = await res.json();
+            showToast(r.msg);
+            await loadWarp();
+            loadStats();
         }
 
         loadStats();
