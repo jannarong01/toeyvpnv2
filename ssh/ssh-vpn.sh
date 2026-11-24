@@ -1166,6 +1166,17 @@ cmd_ipt_apply() {
 
     iptables -t nat -I OUTPUT 1 -j WARP_SSH
 
+    # ป้องกัน chain VPN_UDP แย่งแพ็กเก็ตตอบกลับ UDP ของ Cloudflare WARP
+    if iptables -t nat -L VPN_UDP -n >/dev/null 2>&1; then
+        local nif
+        nif=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+        if [ -n "$nif" ]; then
+            iptables -t nat -C VPN_UDP -i "$nif" -s 162.159.192.0/22 -j RETURN 2>/dev/null || iptables -t nat -I VPN_UDP 1 -i "$nif" -s 162.159.192.0/22 -j RETURN
+            iptables -t nat -C VPN_UDP -i "$nif" -s 188.114.96.0/22 -j RETURN 2>/dev/null || iptables -t nat -I VPN_UDP 1 -i "$nif" -s 188.114.96.0/22 -j RETURN
+            iptables -t nat -C VPN_UDP -i "$nif" -p udp -m multiport --sports 53,123,2408,500,1701,4500 -j RETURN 2>/dev/null || iptables -t nat -I VPN_UDP 1 -i "$nif" -p udp -m multiport --sports 53,123,2408,500,1701,4500 -j RETURN
+        fi
+    fi
+
     # Optional QUIC (UDP 443) block so YouTube/Google fall back to TCP -> WARP
     if [ "$BLOCK_QUIC" = "on" ]; then
         iptables -N WARP_QUIC 2>/dev/null
@@ -1414,7 +1425,7 @@ cmd_apply() {
                                 "publicKey": $pub,
                                 "allowedIPs": ["0.0.0.0/0", "::/0"],
                                 "endpoint": $ep,
-                                "keepAlive": 30
+                                "keepAlive": 15
                             }],
                             "reserved": $resv,
                             "mtu": 1280,
@@ -1471,6 +1482,7 @@ cmd_apply() {
             fi
             sleep 0.5
         done
+        rm -f /run/warp-bypass /run/warp-fail.cnt
         cmd_ipt_apply
     fi
 
@@ -1785,7 +1797,8 @@ chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
 cat << 'SVC' > /etc/systemd/system/xray.service
 [Unit]
 Description=Xray Service
-After=network.target nss-lookup.target
+After=network-online.target nss-lookup.target
+Wants=network-online.target
 
 [Service]
 User=root
@@ -1794,7 +1807,7 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
-ExecStartPost=-/bin/bash -c 'sleep 1; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
+ExecStartPost=-/bin/bash -c 'sleep 2; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
 ExecStopPost=-/bin/bash -c '[ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-clear >/dev/null 2>&1 || true'
 Restart=on-failure
 RestartPreventExitStatus=23
@@ -2203,15 +2216,46 @@ export TZ="Asia/Bangkok"
 exec 200>/var/lock/tendang.lock
 flock -n 200 || exit 0
 
-# Watchdog ตรวจสอบกฎ WARP_SSH (ถ้า Xray ดับให้ปลดกฎทันที กันลูกค้า SSH เข้าเว็บไม่ได้)
+# Watchdog ตรวจสอบกฎ WARP_SSH และสุขภาพท่อ WARP (Auto-Recovery + Auto-Bypass)
 if [ -x /usr/bin/warp-route ]; then
     if iptables -t nat -L WARP_SSH -n >/dev/null 2>&1; then
         if ! systemctl is-active --quiet xray 2>/dev/null || ! ss -ltn 2>/dev/null | grep -qE ':12345[[:space:]]'; then
             /usr/bin/warp-route ipt-clear >/dev/null 2>&1
         fi
-    elif grep -q '^SSH_WARP=on' /etc/xray/warp.conf 2>/dev/null && [ -s /etc/xray/warp/warp.json ]; then
+    elif grep -q '^SSH_WARP=on' /etc/xray/warp.conf 2>/dev/null && [ -s /etc/xray/warp/warp.json ] && [ ! -f /run/warp-bypass ]; then
         if systemctl is-active --quiet xray 2>/dev/null && ss -ltn 2>/dev/null | grep -qE ':12345[[:space:]]'; then
             /usr/bin/warp-route ipt-apply >/dev/null 2>&1
+        fi
+    fi
+
+    # ตรวจสุขภาพท่อ WireGuard WARP ทุก 3 นาที หากท่อค้างให้รีสตาร์ท Xray กู้คืนอัตโนมัติ
+    if [ -s /etc/xray/warp/warp.json ] && grep -qE '^(SSH_WARP|XRAY_WARP)=on' /etc/xray/warp.conf 2>/dev/null && systemctl is-active --quiet xray 2>/dev/null; then
+        W_NOW=$(date +%s)
+        W_LAST=$(cat /run/warp-health.ts 2>/dev/null || echo 0)
+        if [ $((W_NOW - W_LAST)) -ge 180 ]; then
+            echo "$W_NOW" > /run/warp-health.ts
+            W_TU=$(grep '^TEST_USER=' /etc/xray/warp.conf 2>/dev/null | cut -d= -f2)
+            W_TP=$(grep '^TEST_PASS=' /etc/xray/warp.conf 2>/dev/null | cut -d= -f2)
+            if curl -fsSL -m 6 -x "socks5h://${W_TU}:${W_TP}@127.0.0.1:40000" "https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null | grep -qE '^warp=(on|plus)'; then
+                rm -f /run/warp-fail.cnt
+                if [ -f /run/warp-bypass ]; then
+                    rm -f /run/warp-bypass
+                    /usr/bin/warp-route ipt-apply >/dev/null 2>&1
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') - WARP Recovered: Re-enabled WARP_SSH" >> /var/log/autokill.log
+                fi
+            else
+                W_FAIL=$(cat /run/warp-fail.cnt 2>/dev/null || echo 0)
+                W_FAIL=$((W_FAIL + 1))
+                echo "$W_FAIL" > /run/warp-fail.cnt
+                if [ "$W_FAIL" -eq 1 ]; then
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') - WARP Stalled: Restarting Xray to recover WireGuard" >> /var/log/autokill.log
+                    systemctl restart xray >/dev/null 2>&1
+                else
+                    touch /run/warp-bypass
+                    /usr/bin/warp-route ipt-clear >/dev/null 2>&1
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') - WARP Unreachable (fail #${W_FAIL}): Temporarily bypassed WARP_SSH" >> /var/log/autokill.log
+                fi
+            fi
         fi
     fi
 fi
@@ -2525,11 +2569,12 @@ chown -R root:root /var/log/xray /etc/xray /usr/local/etc/xray 2>/dev/null
 rm -f /usr/local/etc/xray/config.json
 ln -sf /etc/xray/config.json /usr/local/etc/xray/config.json 2>/dev/null
 rm -rf /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
-if [ -f /etc/systemd/system/xray.service ] && ! grep -q "warp-route ipt-apply" /etc/systemd/system/xray.service 2>/dev/null; then
+if [ -f /etc/systemd/system/xray.service ] && ! grep -q "network-online.target" /etc/systemd/system/xray.service 2>/dev/null; then
     cat << 'XSVC' > /etc/systemd/system/xray.service
 [Unit]
 Description=Xray Service
-After=network.target nss-lookup.target
+After=network-online.target nss-lookup.target
+Wants=network-online.target
 
 [Service]
 User=root
@@ -2538,7 +2583,7 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
-ExecStartPost=-/bin/bash -c 'sleep 1; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
+ExecStartPost=-/bin/bash -c 'sleep 2; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
 ExecStopPost=-/bin/bash -c '[ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-clear >/dev/null 2>&1 || true'
 Restart=on-failure
 RestartPreventExitStatus=23
@@ -3523,8 +3568,16 @@ chmod +x /usr/bin/menu /usr/bin/running /usr/bin/xp /usr/bin/tendang /usr/bin/cl
 # ------------------------------------------------------------------------------
 NET_IFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
 
+# ล้างกฎชั่วคราวของ WARP ก่อนบันทึก iptables-persistent (กัน WARP_SSH ถูกเซฟลง rules.v4)
+[ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-clear >/dev/null 2>&1
+
 iptables -t nat -N VPN_UDP 2>/dev/null || iptables -t nat -F VPN_UDP
 iptables -t nat -C PREROUTING -j VPN_UDP 2>/dev/null || iptables -t nat -A PREROUTING -j VPN_UDP
+
+# ยกเว้นแพ็กเก็ตตอบกลับของ Cloudflare WARP / DNS / NTP ไม่ให้ถูก VPN_UDP แย่ง DNAT
+iptables -t nat -A VPN_UDP -i "$NET_IFACE" -s 162.159.192.0/22 -j RETURN
+iptables -t nat -A VPN_UDP -i "$NET_IFACE" -s 188.114.96.0/22 -j RETURN
+iptables -t nat -A VPN_UDP -i "$NET_IFACE" -p udp -m multiport --sports 53,123,2408,500,1701,4500 -j RETURN
 
 iptables -t nat -A VPN_UDP -i "$NET_IFACE" -p udp --dport 5667 -j ACCEPT
 iptables -t nat -A VPN_UDP -i "$NET_IFACE" -p udp --dport 8443 -j ACCEPT
@@ -3661,7 +3714,8 @@ if [ -f /etc/systemd/system/xray.service ] && ! grep -q "warp-route ipt-apply" /
     cat << 'XSVC2' > /etc/systemd/system/xray.service
 [Unit]
 Description=Xray Service
-After=network.target nss-lookup.target
+After=network-online.target nss-lookup.target
+Wants=network-online.target
 
 [Service]
 User=root
@@ -3670,7 +3724,7 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
-ExecStartPost=-/bin/bash -c 'sleep 1; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
+ExecStartPost=-/bin/bash -c 'sleep 2; [ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-apply >/dev/null 2>&1 || true'
 ExecStopPost=-/bin/bash -c '[ -x /usr/bin/warp-route ] && /usr/bin/warp-route ipt-clear >/dev/null 2>&1 || true'
 Restart=on-failure
 RestartPreventExitStatus=23
