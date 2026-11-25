@@ -933,6 +933,10 @@ case "$ACTION" in
         /usr/bin/warp-route endpoint "$EP"
         ;;
 
+    warp_auto_endpoint)
+        /usr/bin/warp-route auto-endpoint
+        ;;
+
     warp_toggle)
         TARGET=$(echo "$2" | tr -cd 'a-z')
         STATE=$(echo "$3" | tr -cd 'a-z')
@@ -1002,7 +1006,7 @@ init_conf() {
 XRAY_WARP=off
 SSH_WARP=off
 BLOCK_QUIC=on
-WARP_ENDPOINT=162.159.192.1:2408
+WARP_ENDPOINT=162.159.192.1:4500
 TEST_USER=warptest
 TEST_PASS=${rpass}
 CFG
@@ -1015,12 +1019,12 @@ load_conf() {
     XRAY_WARP=off
     SSH_WARP=off
     BLOCK_QUIC=on
-    WARP_ENDPOINT="162.159.192.1:2408"
+    WARP_ENDPOINT="162.159.192.1:4500"
     TEST_USER="warptest"
     TEST_PASS=""
     # shellcheck disable=SC1090
     source "$WARP_CONF" 2>/dev/null
-    [ -z "$WARP_ENDPOINT" ] && WARP_ENDPOINT="162.159.192.1:2408"
+    [ -z "$WARP_ENDPOINT" ] && WARP_ENDPOINT="162.159.192.1:4500"
     [ -z "$TEST_USER" ] && TEST_USER="warptest"
     if [ -z "$TEST_PASS" ]; then
         TEST_PASS=$(openssl rand -hex 8 2>/dev/null || echo "warp9988")
@@ -1259,9 +1263,9 @@ cmd_install() {
     fi
 
     local priv pub addr_all v4 v6 dev_id tok cid resv
-    priv=$(grep -E '^PrivateKey' "${WARP_DIR}/wgcf-profile.conf" | head -n1 | awk -F'=' '{print $2}' | tr -d ' \r\n')
-    pub=$(grep -E '^PublicKey' "${WARP_DIR}/wgcf-profile.conf" | head -n1 | awk -F'=' '{print $2}' | tr -d ' \r\n')
-    addr_all=$(grep -E '^Address' "${WARP_DIR}/wgcf-profile.conf" | awk -F'=' '{print $2}' | tr ',' '\n' | tr -d ' \r')
+    priv=$(grep -E '^PrivateKey' "${WARP_DIR}/wgcf-profile.conf" | head -n1 | sed 's/^[^=]*=//' | tr -d ' \r\n')
+    pub=$(grep -E '^PublicKey' "${WARP_DIR}/wgcf-profile.conf" | head -n1 | sed 's/^[^=]*=//' | tr -d ' \r\n')
+    addr_all=$(grep -E '^Address' "${WARP_DIR}/wgcf-profile.conf" | sed 's/^[^=]*=//' | tr ',' '\n' | tr -d ' \r')
     v4=$(echo "$addr_all" | grep -E '^[0-9]+\.' | head -n1)
     v6=$(echo "$addr_all" | grep ':' | head -n1)
     [ -z "$v4" ] && v4="172.16.0.2/32"
@@ -1625,6 +1629,33 @@ cmd_test() {
         '{success:($wst=="on" or $wst=="plus"), warp_ip:$wip, warp:$wst, colo:$colo, vps_ip:$vip, ssh_chain:$sc, ssh_packets:$sp, listen_12345:$l12}'
 }
 
+cmd_auto_endpoint() {
+    load_conf
+    if [ ! -s "$WARP_JSON" ]; then
+        json_err "ยังไม่ได้ลงทะเบียน WARP"
+        return 1
+    fi
+    local candidates="162.159.193.1:4500 162.159.192.1:4500 162.159.193.1:500 162.159.192.1:500 162.159.193.1:1701 162.159.192.1:1701 188.114.96.1:4500 162.159.192.1:2408 162.159.193.1:2408 188.114.96.1:2408"
+    local orig_ep="$WARP_ENDPOINT" ep trace wst wip colo
+    for ep in $candidates; do
+        set_conf_val WARP_ENDPOINT "$ep"
+        cmd_apply >/dev/null 2>&1 || continue
+        trace=$(curl -fsSL -m 6 -x "socks5h://${TEST_USER}:${TEST_PASS}@127.0.0.1:40000" "https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null)
+        wst=$(echo "$trace" | awk -F= '$1=="warp"{print $2}')
+        if [ "$wst" = "on" ] || [ "$wst" = "plus" ]; then
+            wip=$(echo "$trace" | awk -F= '$1=="ip"{print $2}')
+            colo=$(echo "$trace" | awk -F= '$1=="colo"{print $2}')
+            rm -f /run/warp-bypass /run/warp-fail.cnt
+            jq -nc --arg ep "$ep" --arg wip "$wip" --arg wst "$wst" --arg colo "$colo"                 '{success:true, endpoint:$ep, warp_ip:$wip, warp:$wst, colo:$colo, msg:("สลับไป Endpoint " + $ep + " สำเร็จ! (IP: " + $wip + " / " + $colo + ")")}'
+            return 0
+        fi
+    done
+    set_conf_val WARP_ENDPOINT "$orig_ep"
+    cmd_apply >/dev/null 2>&1 || true
+    json_err "ไม่พบ Endpoint ของ WARP ที่ตอบสนองในขณะนี้ (ทดสอบครบทุกพอร์ตแล้ว)"
+    return 1
+}
+
 cmd_uninstall() {
     cmd_ipt_clear
     set_conf_val XRAY_WARP off
@@ -1662,6 +1693,7 @@ case "$1" in
     ipt-clear)  cmd_ipt_clear ;;
     status)     cmd_status ;;
     test)       cmd_test ;;
+    auto-endpoint) cmd_auto_endpoint ;;
     uninstall)  cmd_uninstall ;;
     *)          echo "Usage: warp-route {install|manual|endpoint|apply|on|off|add|del|preset|ipt-apply|ipt-clear|status|test|uninstall}" ;;
 esac
@@ -2250,6 +2282,15 @@ if [ -x /usr/bin/warp-route ]; then
                 if [ "$W_FAIL" -eq 1 ]; then
                     echo "$(date '+%Y-%m-%d %H:%M:%S') - WARP Stalled: Restarting Xray to recover WireGuard" >> /var/log/autokill.log
                     systemctl restart xray >/dev/null 2>&1
+                elif [ "$W_FAIL" -eq 2 ] || [ $((W_FAIL % 10)) -eq 0 ]; then
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') - WARP Endpoint Down (fail #${W_FAIL}): Auto-switching Endpoint..." >> /var/log/autokill.log
+                    if /usr/bin/warp-route auto-endpoint >/dev/null 2>&1; then
+                        echo "$(date '+%Y-%m-%d %H:%M:%S') - WARP Auto-Switched Endpoint Successfully!" >> /var/log/autokill.log
+                    else
+                        touch /run/warp-bypass
+                        /usr/bin/warp-route ipt-clear >/dev/null 2>&1
+                        echo "$(date '+%Y-%m-%d %H:%M:%S') - WARP All Endpoints Failed (fail #${W_FAIL}): Bypassed WARP_SSH" >> /var/log/autokill.log
+                    fi
                 else
                     touch /run/warp-bypass
                     /usr/bin/warp-route ipt-clear >/dev/null 2>&1
@@ -3536,10 +3577,18 @@ CONF
                     read -rp "กด Enter เพื่อดำเนินการต่อ..." _
                     ;;
                 13)
-                    echo " ตัวอย่าง: 162.159.192.1:2408 | 162.159.192.1:500 | 162.159.192.1:1701 | 162.159.192.1:4500"
-                    read -rp "กรอก Endpoint ใหม่: " wep
-                    [ -n "$wep" ] && /usr/bin/warp-route endpoint "$wep" | jq -r '.msg'
-                    sleep 1
+                    echo " [1] ค้นหาและสลับไป Endpoint ที่ใช้งานได้อัตโนมัติ (แนะนำ)"
+                    echo " [2] กรอก Endpoint เอง (เช่น 162.159.193.1:4500, 162.159.192.1:4500)"
+                    read -rp "เลือก [1-2]: " eopt
+                    if [ "$eopt" = "1" ]; then
+                        echo -e "${CYAN}กำลังทดสอบหา Endpoint ที่เชื่อมต่อได้...${NC}"
+                        /usr/bin/warp-route auto-endpoint | jq -r '.msg'
+                        read -rp "กด Enter เพื่อดำเนินการต่อ..." _
+                    else
+                        read -rp "กรอก Endpoint ใหม่: " wep
+                        [ -n "$wep" ] && /usr/bin/warp-route endpoint "$wep" | jq -r '.msg'
+                        sleep 1
+                    fi
                     ;;
                 14)
                     read -rp "ยืนยันปิดระบบ WARP Routing? (y/n): " wy

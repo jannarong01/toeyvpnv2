@@ -134,6 +134,9 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
             $eep = escapeshellarg($ep);
             echo shell_exec("sudo /usr/bin/panel-cmd warp_endpoint $eep");
         }
+    } elseif ($act === 'warp_auto_endpoint') {
+        @set_time_limit(120);
+        echo shell_exec("sudo /usr/bin/panel-cmd warp_auto_endpoint");
     } elseif ($act === 'warp_toggle') {
         $t = $_POST['target'] ?? '';
         $s = ($_POST['state'] ?? '') === 'on' ? 'on' : 'off';
@@ -553,13 +556,18 @@ if (isset($_GET['ajax']) && !empty($_SESSION['vpn_admin_logged'])) {
                     </div>
                     <div class="flex gap-2">
                         <select id="warp-endpoint-select" class="flex-1 px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-700/80 text-xs text-slate-200 font-mono focus:outline-none focus:border-cyan-400">
-                            <option value="162.159.192.1:2408">162.159.192.1:2408 (มาตรฐาน)</option>
+                            <option value="162.159.193.1:4500">162.159.193.1:4500 (แนะนำ BKK/4500)</option>
+                            <option value="162.159.192.1:4500">162.159.192.1:4500 (แนะนำ SIN/4500)</option>
+                            <option value="162.159.193.1:500">162.159.193.1:500</option>
                             <option value="162.159.192.1:500">162.159.192.1:500</option>
+                            <option value="162.159.193.1:1701">162.159.193.1:1701</option>
                             <option value="162.159.192.1:1701">162.159.192.1:1701</option>
-                            <option value="162.159.192.1:4500">162.159.192.1:4500</option>
+                            <option value="188.114.96.1:4500">188.114.96.1:4500</option>
+                            <option value="162.159.192.1:2408">162.159.192.1:2408</option>
                             <option value="162.159.193.1:2408">162.159.193.1:2408</option>
                         </select>
-                        <button onclick="warpSaveEndpoint()" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium whitespace-nowrap transition">ตั้ง Endpoint</button>
+                        <button onclick="warpSaveEndpoint()" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium whitespace-nowrap transition">ตั้ง</button>
+                        <button onclick="warpAutoEndpoint()" id="btn-warp-autoep" class="px-3 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 text-xs font-medium whitespace-nowrap transition" title="ค้นหา Endpoint ที่เชื่อมต่อได้อัตโนมัติ">Auto</button>
                         <button onclick="toggleWarpManual()" class="px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs whitespace-nowrap transition" title="ใส่คีย์ WireGuard เองกรณีติด 429">
                             <i class="ri-key-2-line"></i> Manual
                         </button>
@@ -1527,6 +1535,25 @@ ${hysHop}`;
             const r = await res.json();
             showToast(r.msg || 'บันทึก Endpoint แล้ว');
             loadWarp();
+        }
+
+        async function warpAutoEndpoint() {
+            const btn = document.getElementById('btn-warp-autoep');
+            const orig = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="ri-loader-4-line animate-spin"></i>';
+            try {
+                const res = await fetch('?ajax=warp_auto_endpoint', { method: 'POST' });
+                const r = await res.json();
+                showToast(r.msg || 'ค้นหา Endpoint เสร็จสิ้น');
+                await loadWarp();
+                if (r.success) warpTest();
+            } catch (e) {
+                showToast('ค้นหา Endpoint ไม่สำเร็จ');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = orig;
+            }
         }
 
         async function warpToggle(target) {
